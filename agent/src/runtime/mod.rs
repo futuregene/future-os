@@ -19,4 +19,5 @@ pub use scheduler_queue::{
     DEFAULT_GLOBAL_QUEUE_BYTES, DEFAULT_GLOBAL_QUEUE_CAPACITY, DEFAULT_REQUEST_BYTES,
     DEFAULT_SESSION_QUEUE_BYTES, DEFAULT_SESSION_QUEUE_CAPACITY, QUEUED_RUN_STALE_AFTER,
 };
+pub(crate) use session_runtime::SchedulerWake;
 pub use session_runtime::SessionRuntime;

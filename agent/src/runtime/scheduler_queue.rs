@@ -591,11 +591,23 @@ impl InMemoryRunQueue {
     /// Atomically replace every queued request with one successor while
     /// leaving the current active request owned until cooperative abort
     /// completes. Validation and quota projection happen before mutation.
+    ///
+    /// `replace_queued` exists for the one situation where a supersede cannot
+    /// do its own job. A manual compaction owns the transcript, so the messages
+    /// waiting in front are not stale leftovers to cancel — they are peers that
+    /// have waited exactly as long — and there is no active run to interrupt.
+    /// Passing `false` appends instead: same admission checks as `accept`, the
+    /// real queue position in the acknowledgement, and nothing cancelled. The
+    /// request is still *recorded* under the superseding policy, so its
+    /// idempotency digest is identical either way and a retried submission
+    /// resolves to the acceptance it already has rather than a duplicate
+    /// request conflict.
     pub fn supersede(
         &self,
         client_request_id: &str,
         requested_run_id: Option<&str>,
         payload: Value,
+        replace_queued: bool,
     ) -> Result<(RunAck, Vec<ScheduledRunRequest>, Option<String>), RunQueueError> {
         if client_request_id.trim().is_empty() {
             return Err(RunQueueError::MissingClientRequestId);
@@ -639,22 +651,40 @@ impl InMemoryRunQueue {
             return Err(RunQueueError::SequenceExhausted);
         }
 
-        let released_count = state.queued.len();
-        let released_bytes = state.queued_bytes;
-        self.global_budget
-            .replace_queued(released_count, released_bytes, payload_bytes)?;
+        let cancelled = if replace_queued {
+            let released_count = state.queued.len();
+            let released_bytes = state.queued_bytes;
+            self.global_budget
+                .replace_queued(released_count, released_bytes, payload_bytes)?;
 
-        let cancelled: Vec<_> = state.queued.drain(..).collect();
-        state.queued_bytes = 0;
-        for request in &cancelled {
-            remember_terminal(
-                &mut state,
-                request,
-                "cancelled",
-                "superseded",
-                self.recent_ack_limit,
-            );
-        }
+            let cancelled: Vec<_> = state.queued.drain(..).collect();
+            state.queued_bytes = 0;
+            for request in &cancelled {
+                remember_terminal(
+                    &mut state,
+                    request,
+                    "cancelled",
+                    "superseded",
+                    self.recent_ack_limit,
+                );
+            }
+            cancelled
+        } else {
+            if state.queued.len() >= self.capacity {
+                return Err(RunQueueError::QueueFull {
+                    limit: self.capacity,
+                });
+            }
+            let new_bytes = state.queued_bytes.saturating_add(payload_bytes);
+            if new_bytes > self.max_queue_bytes {
+                return Err(RunQueueError::QueueBytesExceeded {
+                    actual: new_bytes,
+                    limit: self.max_queue_bytes,
+                });
+            }
+            self.global_budget.replace_queued(0, 0, payload_bytes)?;
+            Vec::new()
+        };
         let run_sequence = next_sequence(&mut state).expect("sequence capacity preflighted");
         let request = ScheduledRunRequest {
             session_id: self.session_id.clone(),
@@ -676,11 +706,22 @@ impl InMemoryRunQueue {
             },
         );
         state.run_ids.insert(run_id.clone());
-        state.queued_bytes = payload_bytes;
+        let queue_position = if replace_queued {
+            1
+        } else {
+            state.queued.len() as u64 + 1
+        };
+        state.queued_bytes = state.queued_bytes.saturating_add(payload_bytes);
         state.queued.push_back(request);
-        let active_run_id = state.active.as_ref().map(|(run, _)| run.run_id.clone());
+        // Nothing was replaced, so nothing was interrupted either: the caller
+        // must not abort a run on this request's behalf.
+        let active_run_id = if replace_queued {
+            state.active.as_ref().map(|(run, _)| run.run_id.clone())
+        } else {
+            None
+        };
         Ok((
-            RunAck::queued(run_id, run_sequence, 1),
+            RunAck::queued(run_id, run_sequence, queue_position),
             cancelled,
             active_run_id,
         ))
@@ -1927,6 +1968,84 @@ mod tests {
     }
 
     #[test]
+    fn a_supersede_that_cannot_replace_appends_and_keeps_every_peer() {
+        // A manual compaction owns the transcript, so a "replace what is
+        // waiting" prompt has nothing it may replace: the queued messages are
+        // peers waiting behind the same summary, not stale leftovers. It must
+        // append, report its real place, cancel nobody and interrupt nothing.
+        let queue = queue();
+        for (request, run, text) in [
+            ("request-1", "run-1", "first"),
+            ("request-2", "run-2", "second"),
+        ] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueIfBusy,
+                    serde_json::json!({ "text": text }),
+                )
+                .unwrap();
+        }
+        let (ack, cancelled, active) = queue
+            .supersede(
+                "request-3",
+                Some("run-3"),
+                serde_json::json!({ "text": "latest" }),
+                false,
+            )
+            .unwrap();
+        assert!(cancelled.is_empty());
+        assert_eq!(active, None);
+        assert_eq!(ack.accepted_state, RunAcceptedState::Queued);
+        assert_eq!(ack.queue_position, Some(3));
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-1", "run-2", "run-3"]
+        );
+
+        // The request is recorded under the superseding policy either way, so a
+        // retry that lands once the fence is open resolves to the acceptance it
+        // already has instead of a duplicate-request conflict — and it must not
+        // drain the queue on the way through.
+        let retry = queue
+            .supersede(
+                "request-3",
+                Some("run-3"),
+                serde_json::json!({ "text": "latest" }),
+                true,
+            )
+            .unwrap();
+        assert_eq!(retry.0.accepted_state, RunAcceptedState::Existing);
+        assert!(retry.1.is_empty());
+        assert_eq!(queue.queued().len(), 3);
+    }
+
+    #[test]
+    fn a_gated_supersede_respects_the_queue_limits_it_cannot_replace() {
+        // Appending means the queue can be full when the prompt arrives; the
+        // refusal has to be the ordinary one a plain send gets.
+        let queue = InMemoryRunQueue::with_limits("s", 1, 1, 1024, 256, 8);
+        queue
+            .accept(
+                "request-1",
+                None,
+                BusyPolicy::EnqueueIfBusy,
+                serde_json::json!({ "m": "a" }),
+            )
+            .unwrap();
+        let refused = queue.supersede("request-2", None, serde_json::json!({ "m": "b" }), false);
+        assert!(matches!(
+            refused.unwrap_err(),
+            RunQueueError::QueueFull { .. }
+        ));
+    }
+
+    #[test]
     fn supersede_atomically_replaces_queued_and_preserves_active() {
         let queue = queue();
         queue
@@ -1953,6 +2072,7 @@ mod tests {
                 "request-4",
                 Some("run-4"),
                 serde_json::json!({"text":"latest"}),
+                true,
             )
             .unwrap();
         assert_eq!(active.as_deref(), Some("run-1"));
@@ -1978,6 +2098,7 @@ mod tests {
                 "request-4",
                 Some("run-4"),
                 serde_json::json!({"text":"latest"}),
+                true,
             )
             .unwrap();
         assert_eq!(retry.0.accepted_state, RunAcceptedState::Existing);
@@ -2182,37 +2303,37 @@ mod tests {
     fn supersede_validates_request_and_run_ids() {
         let queue = queue();
         // Empty request id.
-        let result = queue.supersede(" ", None, serde_json::json!({}));
+        let result = queue.supersede(" ", None, serde_json::json!({}), true);
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::MissingClientRequestId
         ));
         // Unsafe requested run id.
-        let result = queue.supersede("r1", Some("bad id!"), serde_json::json!({}));
+        let result = queue.supersede("r1", Some("bad id!"), serde_json::json!({}), true);
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::InvalidRunId(_)
         ));
         // Conflicting reuse of a client_request_id.
         queue
-            .supersede("r1", None, serde_json::json!({"message": "one"}))
+            .supersede("r1", None, serde_json::json!({"message": "one"}), true)
             .unwrap();
-        let result = queue.supersede("r1", None, serde_json::json!({"message": "two"}));
+        let result = queue.supersede("r1", None, serde_json::json!({"message": "two"}), true);
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::DuplicateRequestConflict(_)
         ));
         // Identical reuse returns the existing ack.
         let (ack, cancelled, _) = queue
-            .supersede("r1", None, serde_json::json!({"message": "one"}))
+            .supersede("r1", None, serde_json::json!({"message": "one"}), true)
             .unwrap();
         assert!(cancelled.is_empty());
         assert_eq!(ack.accepted_state, RunAcceptedState::Existing);
         // Duplicate requested run id across different requests.
         queue
-            .supersede("r2", Some("run-dup"), serde_json::json!({}))
+            .supersede("r2", Some("run-dup"), serde_json::json!({}), true)
             .unwrap();
-        let result = queue.supersede("r3", Some("run-dup"), serde_json::json!({}));
+        let result = queue.supersede("r3", Some("run-dup"), serde_json::json!({}), true);
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::DuplicateRunId(_)
@@ -2223,7 +2344,7 @@ mod tests {
     fn supersede_reports_oversized_request() {
         let queue = InMemoryRunQueue::with_limits("s", 1, 128, 1024, 8, 256);
         let big = serde_json::json!({"message": "x".repeat(64)});
-        let result = queue.supersede("r1", None, big);
+        let result = queue.supersede("r1", None, big, true);
         assert!(matches!(
             result.unwrap_err(),
             RunQueueError::RequestTooLarge { .. }
@@ -2246,7 +2367,7 @@ mod tests {
         // The global budget is exhausted by the queued run; supersede's
         // replace path must still work (it releases first) — and the count
         // arm fires when the replacement would exceed the count limit.
-        let result = queue.supersede("r2", None, serde_json::json!({"m": "b"}));
+        let result = queue.supersede("r2", None, serde_json::json!({"m": "b"}), true);
         assert!(result.is_ok());
     }
 
@@ -2331,7 +2452,7 @@ mod tests {
         let queue = queue();
         queue.state.lock().next_sequence = u64::MAX;
         let err = queue
-            .supersede("request-1", Some("run-1"), Value::Null)
+            .supersede("request-1", Some("run-1"), Value::Null, true)
             .unwrap_err();
         assert_eq!(err, RunQueueError::SequenceExhausted);
     }

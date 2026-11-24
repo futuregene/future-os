@@ -278,7 +278,7 @@ test("streaming keeps the next draft through updates and completion without subm
   } finally { act(() => tree.unmount()); }
 });
 
-test("compaction leaves the send button live and keeps the draft until the tap is taken", () => {
+test("compaction leaves the send button live and the draft leaves with the tap", () => {
   const send = jest.fn(async () => {});
   const props = {
     message: "next message", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
@@ -295,18 +295,14 @@ test("compaction leaves the send button live and keeps the draft until the tap i
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
   try {
     expect(tree.root.findByType(TextInput).props.editable).toBe(true);
-    // The tap is taken: `useComposerSubmission` holds it until the compaction
-    // settles, so the dock must not refuse it here (the composer used to be
-    // dead for the whole summary — minutes on a long conversation).
+    // The Agent accepts a prompt while it compacts and holds it in the session's
+    // queue, so the composer must not be dead for the whole summary — minutes on
+    // a long conversation.
     expect(button("chat.send").props.disabled).toBe(false);
     act(() => button("chat.send").props.onPress());
     expect(send).toHaveBeenCalledTimes(1);
     expect(props.setMessage).not.toHaveBeenCalled();
     expect(tree.root.findByType(TextInput).props.value).toBe("next message");
-    // A hold in progress is the button's busy state, and says so under the box.
-    act(() => tree.update(createElement(ComposerDock, { ...props, sendHolding: true })));
-    expect(button("chat.send").props.disabled).toBe(true);
-    expect(tree.root.findAll(node => node.props.children === "chat.sendAfterCompaction").length).toBeGreaterThan(0);
   } finally { act(() => tree.unmount()); }
 });
 

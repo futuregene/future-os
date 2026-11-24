@@ -327,13 +327,19 @@ export function NewConversation({
               workspaceId={mode === "workspace" ? activeWorkspace?.id : null}
               draftKey="new"
             />
+            {/* The chosen side paints `surface-selected`, not `surface`. The
+                track under it is `surface-subtle/80`, and in the dark rendition
+                `surface` is 1.05:1 against that track — the chip read as
+                unpainted, so the toggle looked like two labels. The tinted token
+                carries the palette's own accent (20% in dark, 14% in light), so
+                the same class marks the chosen side in every palette. */}
             <div className="relative flex flex-wrap items-center gap-1.5 rounded-b-lg bg-surface-subtle/80 p-1.5">
               <div className="relative" ref={workspaceMenuRef}>
                 <button
                   className={cn(
                     "inline-flex h-8 max-w-64 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
                     mode === "workspace"
-                      ? "bg-surface text-ink shadow-xs"
+                      ? "bg-surface-selected text-ink shadow-xs"
                       : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                   )}
                   onClick={() => {
@@ -404,7 +410,7 @@ export function NewConversation({
                 className={cn(
                   "inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors",
                   mode === "chat"
-                    ? "bg-surface text-ink shadow-xs"
+                    ? "bg-surface-selected text-ink shadow-xs"
                     : "text-ink-soft hover:bg-surface/70 hover:text-ink",
                 )}
                 onClick={() => {

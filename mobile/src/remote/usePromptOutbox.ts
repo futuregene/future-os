@@ -328,7 +328,8 @@ export function usePromptOutbox({
         mode: targetDraft ? targetDraftMode : ("chat" as const),
         workspaceId: targetDraft ? targetDraftWorkspaceId : "",
       };
-      if (compactingRef.current[targetSessionId]) throw new Error("send_compacting");
+      // A compaction does not block a prompt: the Agent accepts it and holds it
+      // in the session's queue until the summary settles.
       // A send is never refused over this client's own idea of whether the
       // session is still running. That flag is a local projection: it lags a
       // run that already ended (a missed terminal event, a socket that died
@@ -503,7 +504,6 @@ export function usePromptOutbox({
       setDraftMode,
       setDraftWorkspaceId,
       setSelectedSessionId,
-      compactingRef,
       syncEngineRef,
       thinkingLevel,
     ],

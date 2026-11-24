@@ -175,10 +175,9 @@ pub(crate) fn compose(
         // itself has no room for a line, and an attachment that is invisible
         // until the prompt is sent is one the reader cannot check.
         //
-        // While a compaction holds the session the title says *that* instead:
-        // `enter` will not send (the agent refuses a prompt until the
-        // checkpoint lands), and a box that looks ready would take the draft as
-        // a send that silently did nothing.
+        // While a compaction runs the title says so: a summary takes minutes, so
+        // the box names what the conversation is busy with. It still sends —
+        // the agent queues the prompt behind the checkpoint.
         let images = data.input.editor.image_attachment_count();
         let hint = t(workbench.lang, Key::InputHintChat);
         // The count is the picture's door, so the painter keeps the two halves

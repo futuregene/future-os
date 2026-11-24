@@ -213,8 +213,7 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
     intent?: SendMessageIntent,
   ): Promise<boolean> => {
     const { remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
-      sessionRefs = {}, compactionPending = false, streaming } = inputRef.current;
-    if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return false; }
+      sessionRefs = {}, streaming } = inputRef.current;
     const draftValue = (override ?? message).trim();
     const value = expandSessionReferences(draftValue, sessionRefs);
     if (!value && !attachments.length) return false;
@@ -252,10 +251,8 @@ export function useSendMessage(options: SendMessageOptions): SendMessageApi {
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {
-      const { remote, t, compactionPending } = inputRef.current;
-      const compacting = compactionPending || remote.compacting;
+      const { remote, t } = inputRef.current;
       const isCurrent = captureOperation();
-      if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant") return;
       const items = remote.timeline.items;
       const index = items.findIndex(entry => entry.id === item.id);

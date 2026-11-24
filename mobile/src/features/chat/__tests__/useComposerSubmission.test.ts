@@ -155,35 +155,16 @@ test("a refused send answers false, so a caller does not act on it", async () =>
   expect(delivered).toBe(false);
 });
 
-test("a send tapped while the context compacts waits for it and then delivers", async () => {
-  // Manual compaction owns the session for as long as the summary takes, and the
-  // Agent refuses prompts meanwhile. The tap is taken and held instead of being
-  // dropped: the draft stays in the field and the send goes when the fence opens.
+test("a send tapped during compaction is handed to the session", async () => {
+  // The Agent accepts a prompt while it compacts and holds it in the session's
+  // queue, so the tap goes straight through: the client has no window to gate.
   const options = optionsFor();
   options.remote = { ...options.remote, compacting: true } as Options["remote"];
   render(options);
-  let pending!: Promise<boolean>;
-  act(() => { pending = api.sendFromComposer(); });
-  expect(api.holdingSend).toBe(true);
-  expect(options.send).not.toHaveBeenCalled();
-  // The hold is one send: a second tap does not queue another one.
-  await act(async () => { await api.sendFromComposer(); });
-  render({ ...options, remote: { ...options.remote, compacting: false } });
-  await act(async () => { await pending; });
-  expect(api.holdingSend).toBe(false);
+  let delivered!: boolean | undefined;
+  await act(async () => { delivered = await api.sendFromComposer(); });
   expect(options.send).toHaveBeenCalledTimes(1);
-});
-
-test("a draft edited while the compaction held the send is not delivered", async () => {
-  const options = optionsFor();
-  options.remote = { ...options.remote, compacting: true } as Options["remote"];
-  render(options);
-  let pending!: Promise<boolean>;
-  act(() => { pending = api.sendFromComposer(); });
-  render({ ...options, message: "new edit", remote: { ...options.remote, compacting: false } });
-  await act(async () => { await pending; });
-  expect(options.send).not.toHaveBeenCalled();
-  // The words are still there for the reader to send themselves.
+  expect(delivered).toBe(true);
   expect(options.setMessage).not.toHaveBeenCalled();
 });
 

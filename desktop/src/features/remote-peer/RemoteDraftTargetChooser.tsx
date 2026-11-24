@@ -82,7 +82,9 @@ export function RemoteDraftTargetChooser({
       className={cn(
         // The local footer's own measurements — same height, same radius, same
         // tint, same row of controls — closed with a border because here it is a
-        // sibling of the composer box rather than a child of one.
+        // sibling of the composer box rather than a child of one. The chosen chip
+        // paints `surface-selected` for the same reason as the local screen's
+        // (see `NewConversation`): `surface` is 1.05:1 on this track in dark.
         "relative flex flex-wrap items-center gap-1.5 rounded-b-lg border-x border-b border-line bg-surface-subtle/80 p-1.5",
         className,
       )}
@@ -95,7 +97,7 @@ export function RemoteDraftTargetChooser({
           className={cn(
             "inline-flex h-8 max-w-64 items-center gap-2 rounded-md px-2.5 text-sm font-medium transition-colors",
             workspaceId
-              ? "bg-surface text-ink shadow-xs"
+              ? "bg-surface-selected text-ink shadow-xs"
               : "text-ink-soft hover:bg-surface/70 hover:text-ink",
           )}
           onClick={() => setMenuOpen(open => !open)}
@@ -198,7 +200,7 @@ export function RemoteDraftTargetChooser({
           "inline-flex h-8 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors",
           workspaceId
             ? "text-ink-soft hover:bg-surface/70 hover:text-ink"
-            : "bg-surface text-ink shadow-xs",
+            : "bg-surface-selected text-ink shadow-xs",
         )}
         onClick={() => {
           onSelect(null);

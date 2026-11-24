@@ -685,12 +685,17 @@ describe("usePromptOutbox sendMessage", () => {
     );
   });
 
-  it("rejects prompts and continuations during compaction before creating an outbox entry", async () => {
+  it("sends a prompt during compaction; a continuation still waits for it", async () => {
+    // A prompt written while the Agent compacts is accepted and queued by the
+    // Agent itself, so the outbox no longer refuses it here.
     const h = await mountSend();
     h.compactingRef.current["session-1"] = true;
-    await expect(h.result.sendMessage("keep this draft")).rejects.toThrow("send_compacting");
+    await act(async () => h.result.sendMessage("keep this draft"));
+    expect(h.requestRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt" }),
+      "session-1",
+    );
     await expect(h.result.continueRun("session-1", "run-1")).rejects.toThrow("send_compacting");
-    expect(mockedUploadAttachments).not.toHaveBeenCalled();
   });
 
   // A stale "still streaming" flag used to refuse every later message with a

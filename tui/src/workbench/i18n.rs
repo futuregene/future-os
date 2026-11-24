@@ -1005,8 +1005,8 @@ fn pair(key: Key) -> (&'static str, &'static str) {
             "Compacting the context — one moment…",
         ),
         ComposerCompacting => (
-            "压缩中，暂不能发送",
-            "Compacting — sending paused",
+            "压缩中 · 新消息排队发送",
+            "Compacting · new messages queue",
         ),
         ToolsDone => ("工具设置已更新", "Tool settings updated"),
         ToolsUsage => ("用法：/tools read,shell · /tools off", "Usage: /tools read,shell · /tools off"),

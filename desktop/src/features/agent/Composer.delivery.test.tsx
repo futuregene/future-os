@@ -25,7 +25,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-it("blocks button and Enter submission during external compaction, preserving the draft", async () => {
+it("sends through an external compaction, which now queues the message", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -33,27 +33,20 @@ it("blocks button and Enter submission during external compaction, preserving th
   try {
     await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress />));
     const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
-    // The disabled send button alone reads as "broken" — compaction runs for
-    // minutes, so the composer must say what it is waiting for.
+    // The status line stays: a summary runs for minutes, so the composer says
+    // what the conversation is busy with. The send button does not wait for it —
+    // the Agent accepts the prompt and holds it in the session's queue.
     expect(host.querySelector("[role=status]")?.textContent).toBe("Compacting context…");
-    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.title).toBe("Compacting context…");
     act(() => {
       editor.textContent = "keep my next message";
       editor.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
     await act(async () => {
       host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
-    expect(onSend).not.toHaveBeenCalled();
-    expect(editor.textContent).toBe("keep my next message");
-    await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} compactionInProgress={false} />));
-    expect(host.querySelector("[role=status]")).toBeNull();
-    expect(editor.textContent).toBe("keep my next message");
-    expect(host.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
-    await act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: "keep my next message" }));
   }
   finally {
     act(() => root.unmount());
