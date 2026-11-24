@@ -1,0 +1,12 @@
+[package]
+name = "future-fd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The process file-descriptor budget, and the fields a store open failure must carry"
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
