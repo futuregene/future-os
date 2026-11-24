@@ -11,6 +11,7 @@ import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
 import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
+import { createImageGallery, ImageGalleryContext } from "../markdown/imageGallery";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
@@ -125,6 +126,10 @@ function MessageBlockImpl({
     };
   }, [message.runId, message.status, onResolveReasoning, reasoningIndex]);
   const isUser = message.role === "user";
+  // A reply's pictures are one drawing even when its prose is split by tool
+  // calls: the store spans every block this message renders, and the lightbox
+  // pages across all of them. A user prompt keeps per-document galleries.
+  const imageGallery = useMemo(() => createImageGallery(), []);
   // While the reply streams, the footer is pinned open and shows a live activity
   // indicator instead of the copy button; the copy button returns once it settles.
   const streaming = !isUser && message.status === "streaming";
@@ -267,7 +272,7 @@ function MessageBlockImpl({
     return <Fragment key={key}>{body}</Fragment>;
   });
 
-  return (
+  const block = (
     <MessageFrame
       author={t(message.authorKey)}
       bodyClassName={streaming ? `**:data-[streamed-block]:${STREAMED_BLOCK_CONTAINMENT}` : undefined}
@@ -429,6 +434,7 @@ function MessageBlockImpl({
         : null}
     </MessageFrame>
   );
+  return isUser ? block : <ImageGalleryContext value={imageGallery}>{block}</ImageGalleryContext>;
 }
 
 /**

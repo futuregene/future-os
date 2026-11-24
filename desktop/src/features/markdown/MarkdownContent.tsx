@@ -7,6 +7,7 @@ import { parseSessionReferenceHref } from "@future-os/markdown";
 import { memo, useMemo } from "react";
 import { useChoiceCardsEnabled } from "./ChoiceCardsContext";
 import { useFutureReference, useFutureReferences } from "./futureReferenceStore";
+import { createImageGallery, ImageGalleryContext, useImageGallery } from "./imageGallery";
 import { LiveMarkdownProvider } from "./LiveMarkdownContext";
 import { joinSoftBreaks, parseFutureMarkdown } from "./parseFutureMarkdown";
 import { PreviewMarkdownContext, usePreviewMarkdown } from "./PreviewMarkdownContext";
@@ -88,6 +89,12 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
   // The user's setting (AppShell provides it): off draws no card and leaves no
   // fenced source behind either.
   const choiceCards = useChoiceCardsEnabled();
+  // One gallery per drawing. A message that holds several blocks (a reply
+  // split by tool calls) provides its own store around all of them, so a
+  // picture in the first block still pages to one in the last; a standalone
+  // document (an artifact, a test) gets a store of its own.
+  const inheritedGallery = useImageGallery();
+  const gallery = useMemo(() => inheritedGallery ?? createImageGallery(), [inheritedGallery]);
   const document = useMemo(() => {
     const parsed = parsedDocument ?? parseFutureMarkdown(content);
     // A previewed document reflows to the reader's width: its source soft breaks
@@ -113,8 +120,9 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
   const choice = choiceCards && choiceAnswer && lastChoiceKey ? { answer: choiceAnswer, lastKey: lastChoiceKey } : undefined;
 
   const body = (
-    <LiveMarkdownProvider value={Boolean(live)}>
-      {/*
+    <ImageGalleryContext value={gallery}>
+      <LiveMarkdownProvider value={Boolean(live)}>
+        {/*
         `data-streamed-block` is present only while this content is the growing
         tail of a streaming reply (`live`). MessageBlock scopes CSS layout
         containment to it: the browser then re-lays-out only this block on each
@@ -122,13 +130,14 @@ function MarkdownContentImpl({ content, parsedDocument, workspaceId, basePath, o
         the difference between a chat that keeps up and one that freezes on a
         long reasoning reply.
       */}
-      <div
-        {...(live ? { "data-streamed-block": "" } : {})}
-        className="space-y-3"
-      >
-        {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`, choice, choiceCards))}
-      </div>
-    </LiveMarkdownProvider>
+        <div
+          {...(live ? { "data-streamed-block": "" } : {})}
+          className="space-y-3"
+        >
+          {document.nodes.map((node, index) => renderBlock(node, workspaceId, `b${index}`, choice, choiceCards))}
+        </div>
+      </LiveMarkdownProvider>
+    </ImageGalleryContext>
   );
   if (basePath)
     return <PreviewMarkdownContext value={{ basePath, openPreview: onOpenPreview }}>{body}</PreviewMarkdownContext>;

@@ -1,10 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { basename, classifyMarkdownTarget, localFilePath, remoteMarkdownImageUrl } from "@future-os/markdown";
 import { radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
-import { useImageViewer } from "./imageViewer";
+import { useImageGallery } from "./imageGallery";
+import { galleryTarget, useImageViewer } from "./imageViewer";
 
 export interface MarkdownImageLoader {
   /** Includes desktop/pair/session identity; paths alone are not cache keys. */
@@ -45,11 +46,21 @@ export function MarkdownImage({ src, alt, width, href, openTarget }: {
   const styles = useStyles();
   const loader = useContext(MarkdownImageLoaderContext);
   const openImageViewer = useImageViewer();
+  const gallery = useImageGallery();
+  const galleryId = useId();
   const basePath = useContext(MarkdownImageBasePathContext);
   const url = remoteMarkdownImageUrl(src);
   const path = resolveMarkdownPath(src, basePath);
   const target = classifyMarkdownTarget(href ?? "");
   const linked = target.kind === "local-file" || target.kind === "external-url";
+  // A remote picture registers the URL it already has. A local one registers
+  // inside `LocalImage`, where its bytes resolve.
+  useEffect(() => {
+    if (!gallery || !url || linked)
+      return;
+    gallery.upsert({ id: galleryId, name: alt, src: url, uri: url });
+  }, [gallery, galleryId, alt, url, linked]);
+  useEffect(() => () => gallery?.remove(galleryId), [gallery, galleryId]);
   if (url) {
     const image = <LoadedImage key={url} alt={alt} uri={url} width={width} />;
     if (linked)
@@ -60,7 +71,7 @@ export function MarkdownImage({ src, alt, width, href, openTarget }: {
     if (!openImageViewer)
       return image;
     return (
-      <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer({ name: alt, uri: url })}>
+      <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer(galleryTarget(gallery, galleryId, { name: alt, uri: url }))}>
         {image}
       </Pressable>
     );
@@ -85,10 +96,21 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const openImageViewer = useImageViewer();
+  const gallery = useImageGallery();
+  const galleryId = useId();
   const [uri, setUri] = useState(() => loader.cached(path));
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const pending = useRef<AbortController | null>(null);
+  // Keep this picture's place in the drawing even while its bytes are still
+  // arriving: `uri` starts null and fills in, and updating the same id leaves
+  // the sequence where it was. A linked picture belongs to its link, not here.
+  useEffect(() => {
+    if (!gallery || linked)
+      return;
+    gallery.upsert({ id: galleryId, name: alt, src: path, uri });
+  }, [gallery, galleryId, alt, path, uri, linked]);
+  useEffect(() => () => gallery?.remove(galleryId), [gallery, galleryId]);
   useEffect(() => () => pending.current?.abort(), []);
   const load = useCallback(async () => {
     if (pending.current) return;
@@ -134,7 +156,7 @@ function LocalImage({ alt, loader, path, width, onOpen, linked }: {
     );
     if (linked || !openImageViewer)
       return <Pressable accessibilityLabel={alt} accessibilityRole={linked ? "link" : "button"} onPress={onOpen}>{picture}</Pressable>;
-    return <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer({ name: alt, uri })}>{picture}</Pressable>;
+    return <Pressable accessibilityLabel={alt} accessibilityRole="button" onPress={() => openImageViewer(galleryTarget(gallery, galleryId, { name: alt, uri }))}>{picture}</Pressable>;
   }
   return (
     <View style={styles.placeholder}>

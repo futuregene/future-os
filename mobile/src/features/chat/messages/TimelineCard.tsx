@@ -5,6 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
+import { createImageGallery, ImageGalleryContext } from "../../../components/imageGallery";
 import { ChoiceCardAnswerProvider } from "../../../components/ChoiceCard";
 import { splitChoiceAnswerEcho } from "@future-os/markdown";
 import { canRecoverMessage } from "@future-os/remote-client/recovery";
@@ -55,6 +56,10 @@ function TimelineCardView({
 }: TimelineCardProps) {
   const styles = useStyles();
   const { colors, chat } = useTheme();
+  // This reply's pictures, in the order it drew them. The full-screen viewer
+  // steps through these (and wraps at both ends) instead of showing one picture
+  // in isolation, so a reply with several is a sequence to read.
+  const imageGallery = useMemo(() => createImageGallery(), []);
   // This phone's own reading preference, not the desktop's: the same choice
   // shapes every paired machine's conversation, because the transcript is drawn
   // here from the slices the desktop sends.
@@ -173,7 +178,8 @@ function TimelineCardView({
         && (item.segments?.length ?? 0) === 0;
       if (drawsNothing) return null;
       return (
-        <View style={styles.assistantMessage}>
+        <ImageGalleryContext value={imageGallery}>
+          <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
             <View style={styles.segmentList}>
               {hiddenWork
@@ -294,7 +300,8 @@ function TimelineCardView({
               </Text>
             </View>
           )}
-        </View>
+          </View>
+        </ImageGalleryContext>
       );
     }
     // A prompt of goal-sized prose (a multi-kilobyte envelope, a pasted log) is

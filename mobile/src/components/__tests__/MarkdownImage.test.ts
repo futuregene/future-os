@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Image, Text } from "react-native";
 import { MarkdownText } from "../MarkdownText";
 import { MarkdownImageLoaderContext, resolveMarkdownPath, type MarkdownImageLoader } from "../MarkdownImage";
+import { createImageGallery, ImageGalleryContext } from "../imageGallery";
 import { ImageViewerContext } from "../imageViewer";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -162,6 +163,34 @@ test("a picture the reply drew full screen on a tap, without another transfer", 
   // through the file-preview download flow.
   expect(openImageViewer).toHaveBeenCalledWith({ name: "chart", uri: "file:///verified.png" });
   expect(onOpenFile).not.toHaveBeenCalled();
+});
+
+test("a reply's pictures open with the whole drawing, in drawing order", async () => {
+  // Two pictures in one reply are a sequence, not two unrelated images: the
+  // viewer gets both entries, and the index says which one was tapped.
+  const gallery = createImageGallery();
+  const openImageViewer = jest.fn();
+  const loader = { scope: "one", cached: (path: string) => `file://${path}`, load: jest.fn() };
+  await act(async () => {
+    tree = create(createElement(MarkdownImageLoaderContext, { value: loader },
+      createElement(ImageGalleryContext, { value: gallery },
+        createElement(ImageViewerContext, { value: openImageViewer },
+          createElement(MarkdownText, { text: "![first](assets/a.png)\n\n![second](assets/b.png)" })))));
+  });
+  pressLabel("first");
+  expect(openImageViewer).toHaveBeenLastCalledWith(expect.objectContaining({
+    name: "first",
+    uri: "file://assets/a.png",
+    gallery: {
+      entries: [
+        expect.objectContaining({ name: "first", src: "assets/a.png", uri: "file://assets/a.png" }),
+        expect.objectContaining({ name: "second", src: "assets/b.png", uri: "file://assets/b.png" }),
+      ],
+      index: 0,
+    },
+  }));
+  pressLabel("second");
+  expect(openImageViewer.mock.lastCall?.[0].gallery?.index).toBe(1);
 });
 
 test("an image linked from elsewhere is still tappable", async () => {

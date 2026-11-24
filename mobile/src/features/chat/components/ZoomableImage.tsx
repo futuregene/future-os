@@ -15,6 +15,14 @@ export const DOUBLE_TAP_SCALE = 2.5;
 export const DOUBLE_TAP_MS = 300;
 const TAP_SLOP = 14;
 
+/**
+ * How far a single finger must travel sideways, at fit scale, to count as a
+ * page swipe rather than a stray drag. Short enough to feel like a flick,
+ * long enough that panning the transcript with a thumb on the picture does not
+ * flip the page.
+ */
+export const PAGE_SWIPE_MIN = 64;
+
 type Touch = { locationX: number; locationY: number };
 
 /** Distance between the first two touches, or null when fewer than two are down. */
@@ -71,6 +79,8 @@ export interface ZoomController {
 /** Injectable clock, so the double-tap window is testable without fake timers. */
 export interface ZoomOptions {
   now?: () => number;
+  /** Called when a sideways flick at fit scale asks for the neighbour. */
+  onPage?: (direction: -1 | 1) => void;
 }
 
 /**
@@ -90,7 +100,7 @@ export interface ZoomOptions {
  *
  * Both the bounds and responder transitions are covered by tests.
  */
-export function createZoomController({ now = Date.now }: ZoomOptions = {}): ZoomController {
+export function createZoomController({ now = Date.now, onPage }: ZoomOptions = {}): ZoomController {
   const scale = new Animated.Value(MIN_SCALE);
   const translateX = new Animated.Value(0);
   const translateY = new Animated.Value(0);
@@ -102,6 +112,9 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
   // tap-vs-pinch/pan.
   let press: { x: number; y: number } | null = null;
   let multiFinger = false;
+  // Set while the finger is dragging a picture that is at fit scale: that drag
+  // is a page swipe, not a pan (there is nothing to pan yet).
+  let pageDrag = false;
   const frame = { width: 0, height: 0 };
 
   const settle = (next: GestureState) => {
@@ -196,6 +209,7 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
       scale.stopAnimation();
       translateX.stopAnimation();
       translateY.stopAnimation();
+      pageDrag = false;
       const touches = event.nativeEvent.touches;
       begin(touches);
       // Where this press started, relative to this view, and whether two fingers
@@ -209,11 +223,17 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
     onPanResponderStart: event => begin(event.nativeEvent.touches),
     onPanResponderEnd: event => begin(event.nativeEvent.touches),
     onPanResponderTerminationRequest: () => false,
-    onPanResponderMove: event => {
+    onPanResponderMove: (event, gesture) => {
       const touches = event.nativeEvent.touches;
       const distance = pinchDistance(touches);
       if (distance !== null) {
         multiFinger = true;
+        // A second finger arriving mid-swipe takes the gesture back for zooming;
+        // do not leave the picture parked sideways from the abandoned page pull.
+        if (pageDrag) {
+          pageDrag = false;
+          translateX.setValue(current.x);
+        }
         // A finger landed or lifted mid-gesture: restart from the live state
         // rather than jumping by a ratio against a stale distance.
         if (start.distance === 0) begin(touches);
@@ -224,23 +244,56 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
       if (current.scale > MIN_SCALE && touches.length === 1) {
         const [centerX, centerY] = centerOf(touches);
         pan(centerX - start.centerX, centerY - start.centerY);
+        return;
+      }
+      if (onPage && current.scale === MIN_SCALE && touches.length === 1) {
+        // Follow the finger so the gesture reads before it commits; the release
+        // decides whether this was a page or a stray drag.
+        pageDrag = true;
+        translateX.setValue(Math.max(-frame.width, Math.min(frame.width, gesture.dx)));
       }
     },
     onPanResponderRelease: (_event, gesture) => {
       const started = press;
       press = null;
-      if (started && !multiFinger
+      if (started && !multiFinger && !pageDrag
         && Math.abs(gesture.dx) <= TAP_SLOP && Math.abs(gesture.dy) <= TAP_SLOP) {
         // A tap settles only when it turns out to be a double-tap; a lone tap
         // leaves the picture as it was.
         tap(started.x, started.y);
         return;
       }
+      if (pageDrag) {
+        pageDrag = false;
+        // Sideways, far enough, and not mostly vertical: a page. Everything
+        // else springs back where it was, so a small wobble never turns a page.
+        if (onPage && Math.abs(gesture.dx) >= PAGE_SWIPE_MIN
+          && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2) {
+          const direction: -1 | 1 = gesture.dx < 0 ? 1 : -1;
+          Animated.timing(translateX, {
+            duration: 160,
+            toValue: gesture.dx < 0 ? -frame.width : frame.width,
+            useNativeDriver: true,
+          }).start(({ finished }) => {
+            // The old picture leaves the way the finger went; the viewer swaps
+            // in its neighbour, and that instance starts from fit.
+            translateX.setValue(0);
+            if (finished)
+              onPage(direction);
+          });
+          return;
+        }
+        settle({ ...current, x: 0, y: 0 });
+        return;
+      }
       // Back to fit when barely zoomed, so no separate reset control is needed.
       if (current.scale < RESET_THRESHOLD) settle({ scale: MIN_SCALE, x: 0, y: 0 });
       else settle(current);
     },
-    onPanResponderTerminate: () => settle(current),
+    onPanResponderTerminate: () => {
+      pageDrag = false;
+      settle(current);
+    },
   });
 
   return {
@@ -277,12 +330,15 @@ function centerOf(touches: readonly Touch[]): [number, number] {
  * Bounds and finger transitions are covered by tests through the controller; the
  * gesture itself is verified in the harness by dispatching real touch sequences.
  */
-export function ZoomableImage({ uri, accessibilityLabel }: {
+export function ZoomableImage({ uri, accessibilityLabel, onPage }: {
   uri: string;
   accessibilityLabel?: string;
+  onPage?: (direction: -1 | 1) => void;
 }) {
   const styles = useStyles();
-  const [zoom] = useState(() => createZoomController());
+  // The viewer's page callback is fixed for this picture's lifetime: a step
+  // remounts the controller on the neighbour, so there is nothing to refresh.
+  const [zoom] = useState(() => createZoomController({ onPage }));
 
   return (
     <View
