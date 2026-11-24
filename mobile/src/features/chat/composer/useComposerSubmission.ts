@@ -1,6 +1,6 @@
 import { useFusionAvailability } from "../../../remote/useFusionAvailability";
 import { fusionTask } from "@future-os/thread-projection";
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import type { useRemote } from "../../../remote/RemoteContext";
 import type { MobileAttachment } from "../../../remote/types";
@@ -27,6 +27,15 @@ interface Options {
   /** Drop the answer once the send it belonged to was taken. */
   clearChoice: () => void;
   restoring: boolean;
+  /**
+   * Whether this conversation is compacting right now.
+   *
+   * Passed in rather than read off `remote` because a manual compaction the reader
+   * just started is this screen's own attempt (`useCompactContext.pending`) before
+   * the Agent's flag catches up; the composer's send gate already reads the two as
+   * one value, and the hold below must agree with it. Defaults to the Agent's flag.
+   */
+  compacting?: boolean;
   setMessage: Dispatch<SetStateAction<string>>;
   send: SendMessageApi["send"];
   recommendation: SkillRecommendationApi;
@@ -41,6 +50,37 @@ export function useComposerSubmission(options: Options) {
   const { scope, captureOperation } = useConversationOperation(options.remote);
   const attemptRef = useRef<object | null>(null);
   const [installingScope, setInstallingScope] = useState<object | null>(null);
+  const [holdingScope, setHoldingScope] = useState<object | null>(null);
+  /**
+   * Submits whose tap landed while the context was compacting.
+   *
+   * A compaction owns the session for as long as the summary takes — minutes on
+   * a long conversation — and the Agent refuses prompts meanwhile (`session_busy`
+   * with `busy_reason: compaction`). The phone used to disable the send button
+   * for that whole window, so a message written during a compaction could not be
+   * handed over at all. It now keeps the draft and waits here instead: the tap is
+   * honoured, the words stay visible in the field, and the send goes the moment
+   * the Agent closes the fence.
+   */
+  const compactionWaitersRef = useRef(new Set<(ended: boolean) => void>());
+  const resolveCompactionWaiters = useCallback((ended: boolean) => {
+    const waiters = Array.from(compactionWaitersRef.current);
+    compactionWaitersRef.current.clear();
+    for (const resume of waiters) resume(ended);
+  }, []);
+  // Leaving the screen ends the wait without delivering: the draft is persisted
+  // where it was written, and coming back to this conversation does not send a
+  // message the reader has long stopped watching. `captureOperation` would refuse
+  // the delivery anyway; this only stops the promise from hanging.
+  useEffect(() => () => resolveCompactionWaiters(false), [resolveCompactionWaiters]);
+  const compacting = options.compacting ?? options.remote.compacting;
+  const compactingRef = useCommittedRef(compacting);
+  useEffect(() => {
+    if (!compacting) resolveCompactionWaiters(true);
+  }, [compacting, resolveCompactionWaiters]);
+  const waitForCompactionEnd = useCallback(() => new Promise<boolean>((resolve) => {
+    compactionWaitersRef.current.add(resolve);
+  }), []);
   useLayoutEffect(() => () => { attemptRef.current = null; }, [scope]);
 
   const submit = useCallback(async (
@@ -55,8 +95,7 @@ export function useComposerSubmission(options: Options) {
     // sends vanish silently. The desktop answers for itself — a run still in
     // flight is refused there with a reason — and `attemptRef` still stops one
     // tap from submitting twice.
-    if (attemptRef.current || initial.restoring || initial.remote.busy
-      || initial.remote.compacting) return false;
+    if (attemptRef.current || initial.restoring || initial.remote.busy) return false;
     if (!initial.message.trim() && !initial.attachments.length && !answerOrNull(initial.choice)) return false;
     if (fusionTask(initial.message) !== null && !initial.remote.capabilities.has("fusion_v1")) {showToast(initial.t("chat.fusionUnavailable"));return false;}
     if (fusionTask(initial.message) !== null && !fusionAllowed.current) { showToast(initial.t("chat.fusionDisabled")); return false; }
@@ -67,6 +106,16 @@ export function useComposerSubmission(options: Options) {
     const unchanged = () => isCurrent() && latest.current.message === initial.message
       && latest.current.attachments === initial.attachments;
     try {
+      if (compactingRef.current) {
+        setHoldingScope(scope);
+        const ended = await waitForCompactionEnd();
+        if (attemptRef.current === attempt) setHoldingScope(null);
+        // The compaction that ended may have been followed by another (or the
+        // screen may have moved on): the send is refused exactly as it was
+        // before, and the draft stays where the reader can see it.
+        if (!ended || !isCurrent() || !unchanged()) return false;
+        if (compactingRef.current) return false;
+      }
       let composed: string | undefined;
       if (install) {
         setInstallingScope(scope);
@@ -100,9 +149,10 @@ export function useComposerSubmission(options: Options) {
       if (attemptRef.current === attempt) {
         attemptRef.current = null;
         setInstallingScope(null);
+        setHoldingScope(null);
       }
     }
-  }, [captureOperation, latest, scope, fusionAllowed]);
+  }, [captureOperation, latest, scope, fusionAllowed, waitForCompactionEnd, compactingRef]);
   /**
    * The composer's send, with what this send means while the reply streams.
    *
@@ -118,9 +168,11 @@ export function useComposerSubmission(options: Options) {
   const installSuggestedSkill = useCallback(() => submit(true), [submit]);
   return useMemo(() => ({
     sendFromComposer, dismissSuggestedSkill, installSuggestedSkill,
-    installingSkill: installingScope === scope
+    installingSkill: installingScope === scope,
+    /** The tap was taken and waits for the compaction to finish (§ below). */
+    holdingSend: holdingScope === scope,
   }),
-    [sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingScope, scope]);
+    [sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingScope, holdingScope, scope]);
 }
 
 /**
