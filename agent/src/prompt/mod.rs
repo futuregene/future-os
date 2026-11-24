@@ -1763,6 +1763,11 @@ mod tests {
     /// no scope describes it.
     #[test]
     fn skill_locations_are_relative_to_their_named_scope() {
+        // Both reads of `$HOME` this test makes — the roots here and the ones
+        // `format_skills_section` resolves itself — have to agree. A parallel
+        // test that redirects `$HOME` (any `TestHome`) takes this lock, so
+        // holding it across both reads keeps the two consistent.
+        let _home_guard = crate::test_support::home_env_lock();
         let roots = skill_scope_roots();
         let app = format!("{}/alpha/SKILL.md", roots[0].1);
         let shared = format!("{}/beta/SKILL.md", roots[1].1);
@@ -1805,6 +1810,69 @@ mod tests {
             skill_scope_and_path(&format!("{}/a/b/SKILL.md", roots[1].1), &roots),
             Some(("shared", "a/b/SKILL.md".to_string()))
         );
+    }
+
+    /// `skill_scope_roots()` and `format_skills_section()` each resolve `$HOME`
+    /// on their own, so a caller that reads the roots and then formats them is
+    /// reading `$HOME` twice. Under parallel tests those two reads can straddle
+    /// a `TestHome` redirect — `skill_locations_are_relative_to_their_named_scope`
+    /// failed that way in a full lib run while passing on its own — and the
+    /// section then names one home while the skill paths came from another.
+    ///
+    /// Deterministic by construction, not by repetition: the helper thread parks
+    /// on the very lock this test takes, so the redirect lands either before or
+    /// after the whole read pair, never inside it. Remove the guard below and
+    /// the redirect slides in between the two reads and this fails.
+    ///
+    /// The redirect is held only until the formatting is over — it waits for a
+    /// signal instead of sleeping — so this test adds no `$HOME` window for the
+    /// unlocked readers that are still out there.
+    #[test]
+    fn skill_roots_are_read_under_the_home_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let home_guard = crate::test_support::home_env_lock();
+        let roots = skill_scope_roots();
+        let skill = crate::skills::Skill {
+            name: "alpha".to_string(),
+            description: "d".to_string(),
+            name_zh: None,
+            description_zh: None,
+            version: None,
+            location: format!("{}/alpha/SKILL.md", roots[0].1),
+            disable_model_invocation: false,
+        };
+
+        // Blocks in `TestHome::new()` until this test releases the lock, then
+        // sets `$HOME` aside and stays there until told the formatting is done.
+        let redirected_early = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = redirected_early.clone();
+        let (formatted, wait_for_format) = std::sync::mpsc::channel::<()>();
+        let redirect = std::thread::spawn(move || {
+            let _redirected = crate::test_support::TestHome::new();
+            flag.store(true, Ordering::SeqCst);
+            let _ = wait_for_format.recv_timeout(std::time::Duration::from_secs(5));
+        });
+
+        // Long enough that an unguarded helper has certainly taken the lock.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let xml = format_skills_section(&[&skill]);
+        assert!(
+            !redirected_early.load(Ordering::SeqCst),
+            "a concurrent TestHome moved `$HOME` while the roots were being \
+             formatted, so the two reads straddled it:\n{xml}"
+        );
+        assert!(
+            xml.contains("<location scope=\"app\">alpha/SKILL.md</location>"),
+            "format_skills_section resolved a different home than the roots \
+             captured above:\n{xml}"
+        );
+        assert_eq!(xml.matches(roots[0].1.as_str()).count(), 1, "{xml}");
+
+        // Only now may the redirect start; it ends as soon as it is told.
+        drop(home_guard);
+        let _ = formatted.send(());
+        redirect.join().expect("redirect thread");
     }
 
     #[test]
