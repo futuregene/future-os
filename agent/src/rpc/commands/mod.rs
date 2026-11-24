@@ -373,9 +373,17 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     // Manual compaction owns a stable session snapshot until it commits or
     // fails. Commands that mutate the session must never wait behind that
-    // read lease: a client-side deadline would expire while the detached
-    // spawn_blocking task later applied the mutation. Reject admission before
-    // any side effect so callers can safely retry after the terminal event.
+    // snapshot: a client-side deadline would expire while the worker later
+    // applied the mutation. Reject admission before any side effect so callers
+    // can safely retry after the terminal event.
+    //
+    // `prompt` is deliberately absent. Writing a message into a session is not a
+    // mutation of the transcript the summary reads: it is accepted, receipted
+    // and queued like any prompt written while a run is in flight, and the
+    // session's scheduler starts it when the compaction's fence opens
+    // (`ServerSession::on_compaction_finished`). That window is exactly when a
+    // reader watching a long conversation be summarised writes their next
+    // message — refusing it there was the bug.
     const COMPACTION_CONFLICTS: &[&str] = &[
         "abort_session",
         "add_session_rule",
@@ -389,7 +397,6 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "disable_builtin_tools",
         "disable_tools",
         "fork",
-        "prompt",
         "reload_config",
         "recover_session",
         "reset_session_history",
@@ -409,7 +416,11 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "set_tools",
         "shell",
     ];
-    if COMPACTION_CONFLICTS.contains(&cmd_type.as_str())
+    // A history reset rewrites the conversation wholesale, which a prompt cannot
+    // join: `prompt` is therefore refused here too, even though the compaction
+    // gate below accepts it (the queue is a safe place for a message; a
+    // half-replaced transcript is not).
+    if (COMPACTION_CONFLICTS.contains(&cmd_type.as_str()) || cmd_type == "prompt")
         && session
             .read()
             .history_reset_in_progress

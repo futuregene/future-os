@@ -59,7 +59,6 @@ function ComposerDockView({
   setSelector,
   onCompactContext,
   compactionPending = false,
-  sendHolding = false,
   draftRestoring = false,
   keyboardHeight = 0,
   skillSuggestion = null,
@@ -122,14 +121,6 @@ function ComposerDockView({
   /** Manual context compaction, offered as a `/` action (never a toolbar button). */
   onCompactContext?: () => void;
   compactionPending?: boolean;
-  /**
-   * A send tapped while the context was compacting, waiting for it to finish.
-   *
-   * The tap is taken rather than refused (see `useComposerSubmission`): the draft
-   * stays in the box, the button reads busy, and this line says why nothing has
-   * left yet — for minutes, on a long conversation.
-   */
-  sendHolding?: boolean;
   draftRestoring?: boolean;
   keyboardHeight?: number;
   /** A skill suggestion holding the draft, or null (see the card component). */
@@ -209,9 +200,9 @@ function ComposerDockView({
   // while the turn streams is handed to the session, which holds it and runs it
   // at the boundary. Keep the short send/upload busy phase locked so its
   // acknowledgement cannot clear edits.
-  // A compaction does not lock the send either, for the same reason: the Agent
-  // refuses prompts while it owns the session, so the tap is held by
-  // `useComposerSubmission` and leaves when the fence opens (`sendHolding`).
+  // A compaction does not lock the send either: a manual compaction accepts the
+  // prompt and holds it in the session's queue, so what the reader writes
+  // mid-summary leaves with the run that starts when the summary settles.
   // The recommendation wait locks drafting too (see `skillEvaluating`): the
   // message that goes out must be the one the recommender was asked about.
   const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring && !archived;
@@ -241,7 +232,7 @@ function ComposerDockView({
    * held.
    */
   const hasAnswer = choice !== null && choice.selectedIds.length > 0;
-  const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !sendHolding && !remote.busy && remote.desktopOnline &&
+  const canSend = !archived && !skillInstalling && !draftRestoring && !skillEvaluating && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0 || hasAnswer);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
@@ -637,17 +628,11 @@ function ComposerDockView({
             openAttachmentMenu={openAttachmentMenu}
             stopRequest={stopRequest}
             skillEvaluating={skillEvaluating}
-            sendHolding={sendHolding}
             canSend={canSend}
             send={send}
             hasDraft={hasDraft}
             onOpenQueueChoice={() => setQueueChoiceOpen(true)}
           />
-          {sendHolding && (
-            <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
-              {t("chat.sendAfterCompaction")}
-            </Text>
-          )}
           {remote.streaming && stopRequest.status !== "idle" && (
             <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
               {t(

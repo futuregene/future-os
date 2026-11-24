@@ -273,6 +273,11 @@ pub(crate) fn handle_compact(
     let instructions = cmd.custom_instructions.clone();
     let worker_session = session.clone();
     let broadcaster = session.read().broadcaster.clone();
+    // Take the summary's inputs under one short guard, then release it: the
+    // worker below must not hold the session while it summarises. Both the
+    // queue and every command handler need that lock, and the summary can take
+    // minutes on a long conversation.
+    let job = session.read().compaction_job();
     let spawn = std::thread::Builder::new()
         .name("manual-compaction".to_string())
         .spawn(move || {
@@ -285,9 +290,7 @@ pub(crate) fn handle_compact(
             }
             let _reset = ResetOnDrop(in_progress.clone());
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                worker_session
-                    .read()
-                    .compact_with_operation_id(&instructions, worker_operation_id.clone())
+                job.run(&instructions, worker_operation_id.clone())
             }));
             match result {
                 Ok(Ok(result))
@@ -343,11 +346,21 @@ pub(crate) fn handle_compact(
                     ));
                 }
             }
+            // The fence is open: whatever was written into the queue while the
+            // summary owned the transcript has been waiting exactly for this
+            // moment. Nothing can start it here — this is a plain thread with
+            // no tokio context — so hand the session's scheduler a turn.
+            drop(_reset);
+            worker_session.read().wake_scheduler_after_compaction();
         });
     if let Err(error) = spawn {
         let sess = session.read();
         sess.compaction_in_progress.store(false, Ordering::Release);
         *sess.compaction_request.lock() = None;
+        // A prompt written in the microseconds this took may have queued itself
+        // behind the fence that never closed around any work. Opening it is the
+        // same hand-off the worker's own end does.
+        sess.wake_scheduler_after_compaction();
         return RpcResponse::build_fail(
             id,
             "compact",

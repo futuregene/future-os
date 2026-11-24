@@ -24,6 +24,18 @@ struct RuntimeTask {
     _abort_handle: tokio::task::AbortHandle,
 }
 
+/// Something the scheduler has to look at, delivered from wherever it happened.
+///
+/// Two very different places hand work to the session's one scheduler turn: a
+/// run's completion monitor (in the Agent's async runtime) and the plain thread
+/// that just finished a manual compaction. The latter has no tokio context of its
+/// own — it cannot spawn the run a queued prompt is waiting for — so it says "look
+/// at the queue now" through the channel the completion monitor already uses.
+pub(crate) enum SchedulerWake {
+    RunFinished(RunLease),
+    CompactionFinished,
+}
+
 /// Authoritative per-session execution runtime.
 ///
 /// The control state and task ownership live together behind short locks.
@@ -34,7 +46,7 @@ pub struct SessionRuntime {
     cancellation_timer: Mutex<Option<tokio::task::AbortHandle>>,
     auxiliary: Arc<std::sync::atomic::AtomicUsize>,
     task: Mutex<Option<RuntimeTask>>,
-    completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<RunLease>>>,
+    completion_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<SchedulerWake>>>,
     // Test-only observability/failure injection: always compiled (setters are
     // cfg(test)-only) so the production check stays single-line.
     fail_next_begin_finalizing: std::sync::atomic::AtomicBool,
@@ -52,8 +64,23 @@ impl SessionRuntime {
         }
     }
 
-    pub fn set_completion_sender(&self, sender: tokio::sync::mpsc::UnboundedSender<RunLease>) {
+    pub(crate) fn set_completion_sender(
+        &self,
+        sender: tokio::sync::mpsc::UnboundedSender<SchedulerWake>,
+    ) {
         *self.completion_tx.lock() = Some(sender);
+    }
+
+    /// Hand the scheduler a turn after a manual compaction's fence opened.
+    ///
+    /// The compaction runs on a plain thread with no tokio context, so it cannot
+    /// start the queued prompt itself; this channel reaches the session's
+    /// scheduler worker, which runs on the Agent's runtime. Best effort: a session
+    /// being torn down drops the receiver, and there is nothing left to start.
+    pub(crate) fn notify_compaction_finished(&self) {
+        if let Some(sender) = self.completion_tx.lock().as_ref() {
+            let _ = sender.send(SchedulerWake::CompactionFinished);
+        }
     }
 
     pub fn begin(
@@ -231,7 +258,7 @@ impl SessionRuntime {
         let recovered = self.control.recover_persistence_degraded(lease);
         if recovered {
             if let Some(sender) = self.completion_tx.lock().as_ref() {
-                let _ = sender.send(lease.clone());
+                let _ = sender.send(SchedulerWake::RunFinished(lease.clone()));
             }
         }
         recovered
@@ -258,7 +285,7 @@ impl SessionRuntime {
         if finished {
             self.stop_cancellation_timer();
             if let Some(sender) = self.completion_tx.lock().as_ref() {
-                let _ = sender.send(lease.clone());
+                let _ = sender.send(SchedulerWake::RunFinished(lease.clone()));
             }
         }
         finished
@@ -333,7 +360,7 @@ impl SessionRuntime {
             drop(slot);
             if completed {
                 if let Some(sender) = runtime.completion_tx.lock().as_ref() {
-                    let _ = sender.send(lease);
+                    let _ = sender.send(SchedulerWake::RunFinished(lease));
                 }
             }
         });

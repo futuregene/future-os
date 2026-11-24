@@ -11,6 +11,7 @@ mod protocol;
 pub(crate) mod run_snapshot;
 mod session;
 mod session_prompt;
+mod standalone_compaction;
 
 // Wire payload carriers live in the future-rpc crate (typed-RPC milestone);
 // the agent keeps constructing them via these re-exports.

@@ -2175,13 +2175,6 @@ impl Live {
     /// sits there". The echo and the spinner are what tell the reader the key
     /// landed. Returns whether the agent is owed a prompt.
     pub fn begin_submit(&mut self, text: &str) -> bool {
-        // A compaction owns the session: the agent answers a prompt with
-        // `session_busy` until the checkpoint lands, and the draft is the
-        // reader's, so it stays where it is with the reason on the notice row.
-        if self.compacting() {
-            self.notice = Some(t(self.lang, Key::ComposerCompacting).into());
-            return false;
-        }
         self.draft.editor.record_submission();
         // The draft is read first because it is what carries the folded pastes
         // that `pending()` expands into the prompt. It is *not* the only source:
@@ -6017,14 +6010,19 @@ mod tests {
         live.client.disconnect();
     }
 
-    /// A compaction holds the session: the draft stays, the notice says why, and
-    /// nothing is queued for a later flush.
+    /// A prompt written while a compaction runs is sent, not refused: the agent
+    /// keeps it at the front of the session's queue and runs it when the
+    /// checkpoint lands, which is what makes typing during a long summary work.
     #[tokio::test]
-    async fn a_submission_while_compacting_is_refused_before_anything_is_echoed() {
+    async fn a_submission_while_compacting_goes_out() {
         let (mock, seen) = crate::rpc::grpc_client::tests::api_mock_answering(&[
             ("get_state", r#"{"sessionId":"s1","model":"future/old"}"#),
             ("get_session_entries", r#"{"entries":[]}"#),
             ("compact", r#"{"accepted":true}"#),
+            (
+                "prompt",
+                r#"{"run_id":"run-1","run_epoch":0,"accepted_state":"queued","queue_position":1}"#,
+            ),
         ]);
         let addr = crate::rpc::grpc_client::tests::spawn_api_mock(mock).await;
         let (mut live, _events) = Live::attach(&addr, Some("s1"), false, None)
@@ -6033,11 +6031,11 @@ mod tests {
         live.begin_compaction();
         live.set_draft("hello".into(), 5);
 
-        assert!(!live.begin_submit("hello"), "a compaction owns the session");
-        assert!(live.notice.is_some(), "the reader is told why");
-        assert_eq!(live.draft.editor.text(), "hello", "the draft is theirs");
-        assert!(!live.submit_pending());
-        assert!(!seen.lock().unwrap().iter().any(|kind| kind == "prompt"));
+        live.apply(WbAction::Submit("hello".into())).await;
+        assert!(
+            seen.lock().unwrap().iter().any(|kind| kind == "prompt"),
+            "the prompt reaches the agent, which queues it behind the summary"
+        );
         live.client.disconnect();
     }
 
@@ -8365,15 +8363,11 @@ mod tests {
             Some(t(live.language(), Key::NoticeCompacting))
         );
 
-        // A prompt is left in the draft with the reason on the notice row: the
-        // agent would refuse it, and the text is the reader's.
+        // A prompt written while the summary runs is sent, not refused: the
+        // agent keeps it at the front of the session's queue and runs it when
+        // the checkpoint lands.
         live.set_draft("keep me".into(), 7);
-        live.apply(WbAction::Submit("keep me".into())).await;
-        assert_eq!(live.draft.text, "keep me", "the draft survives");
-        assert_eq!(
-            live.notice.as_deref(),
-            Some(t(live.language(), Key::ComposerCompacting))
-        );
+        assert!(live.begin_submit("keep me"), "the prompt goes out");
 
         live.handle_event(event(
             "compaction_committed",
