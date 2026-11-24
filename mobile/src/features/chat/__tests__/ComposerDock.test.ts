@@ -278,7 +278,7 @@ test("streaming keeps the next draft through updates and completion without subm
   } finally { act(() => tree.unmount()); }
 });
 
-test("compaction blocks button and keyboard sends without clearing or locking the draft", () => {
+test("compaction leaves the send button live and keeps the draft until the tap is taken", () => {
   const send = jest.fn(async () => {});
   const props = {
     message: "next message", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
@@ -295,18 +295,18 @@ test("compaction blocks button and keyboard sends without clearing or locking th
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && node.props.onPress)[0]!;
   try {
     expect(tree.root.findByType(TextInput).props.editable).toBe(true);
-    expect(button("chat.compacting").props.disabled).toBe(true);
-    act(() => {
-      button("chat.compacting").props.onPress();
-      tree.root.findByType(TextInput).props.onSubmitEditing();
-    });
-    expect(send).not.toHaveBeenCalled();
-    expect(props.setMessage).not.toHaveBeenCalled();
-    act(() => tree.update(createElement(ComposerDock, { ...props, remote: { ...props.remote, compacting: false } })));
-    expect(tree.root.findByType(TextInput).props.value).toBe("next message");
+    // The tap is taken: `useComposerSubmission` holds it until the compaction
+    // settles, so the dock must not refuse it here (the composer used to be
+    // dead for the whole summary — minutes on a long conversation).
     expect(button("chat.send").props.disabled).toBe(false);
     act(() => button("chat.send").props.onPress());
     expect(send).toHaveBeenCalledTimes(1);
+    expect(props.setMessage).not.toHaveBeenCalled();
+    expect(tree.root.findByType(TextInput).props.value).toBe("next message");
+    // A hold in progress is the button's busy state, and says so under the box.
+    act(() => tree.update(createElement(ComposerDock, { ...props, sendHolding: true })));
+    expect(button("chat.send").props.disabled).toBe(true);
+    expect(tree.root.findAll(node => node.props.children === "chat.sendAfterCompaction").length).toBeGreaterThan(0);
   } finally { act(() => tree.unmount()); }
 });
 
@@ -363,7 +363,7 @@ test("manual compaction is a slash action, gated by the Desktop and never a tool
   } finally { act(() => tree.unmount()); }
 });
 
-test.each(["committed", "failed", "unchanged", "timeout", "unobserved"] as const)("real slash action locks sending before ACK, preserves the draft and releases on %s", async status => {
+test.each(["committed", "failed", "unchanged", "timeout", "unobserved"] as const)("real slash action keeps sending available during compaction, preserves the draft and releases on %s", async status => {
   let acknowledge!: (value: { sessionId: string; operationId: string }) => void;
   let finish!: (outcome: CompactionOutcome) => void;
   const ack = new Promise<{ sessionId: string; operationId: string }>(done => { acknowledge = done; });
@@ -400,17 +400,18 @@ test.each(["committed", "failed", "unchanged", "timeout", "unobserved"] as const
     expect(compact).toHaveBeenCalledTimes(1);
     expect(input().props.value).toBe("keep next");
     expect(input().props.editable).toBe(true);
-    expect(button("chat.compacting").props.disabled).toBe(true);
-    act(() => { button("chat.compacting").props.onPress(); input().props.onSubmitEditing(); });
-    expect(send).not.toHaveBeenCalled();
+    // Compaction no longer locks the send: a tap is held until it settles.
+    expect(button("chat.send").props.disabled).toBe(false);
+    act(() => { button("chat.send").props.onPress(); input().props.onSubmitEditing(); });
+    expect(send).toHaveBeenCalledTimes(2);
     await act(async () => acknowledge({ sessionId: "s1", operationId: "cmp" }));
-    expect(button("chat.compacting").props.disabled).toBe(true);
+    expect(button("chat.send").props.disabled).toBe(false);
     const outcome: CompactionOutcome = status === "unchanged" ? { status, alreadyCompacted: true, reused: true } : { status };
     await act(async () => finish(outcome));
     expect(button("chat.send").props.disabled).toBe(false);
     expect(input().props.value).toBe("keep next");
     act(() => button("chat.send").props.onPress());
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(3);
   } finally { act(() => tree.unmount()); }
 });
 
