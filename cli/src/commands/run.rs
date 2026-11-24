@@ -75,8 +75,11 @@ Session options:
   --continue, -c           Continue the most recent session (by updated_at)
   --fork <entry-id>        Fork a new session from a specific entry in the current session
   --steer                  Interrupt the session's in-progress run and ask
-                           immediately (supersede_session). Default: append the
-                           prompt behind any in-progress run (enqueue_if_busy).
+                           immediately (supersede_session). A manual compaction
+                           is not a run and cannot be interrupted: there the
+                           prompt is queued behind the messages already
+                           waiting. Default: append the prompt behind any
+                           in-progress run (enqueue_if_busy).
   --no-wait                Submit the prompt, print an ack, and exit without
                            waiting for the answer. Useful for scripting and
                            fire-and-forget runs. Default without this flag is
@@ -840,6 +843,12 @@ mod tests {
             "stdout: {stdout}"
         );
         assert!(stdout.contains("--fork <entry-id>"), "stdout: {stdout}");
+        // What `--steer` cannot do is where a reader is most likely to misread
+        // it: a manual compaction is not a run, so the prompt queues there.
+        assert!(
+            stdout.contains("is not a run and cannot be interrupted"),
+            "help must say a steer queues while a compaction owns the session: {stdout}"
+        );
         assert!(
             stdout.contains("auto, per-user local IPC"),
             "stdout: {stdout}"
