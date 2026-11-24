@@ -263,7 +263,9 @@ export function useConnectionSummary({
  * It draws the action only when the connection is not green end to end (see
  * `ConnectionSummary.reconnectable`). "Connected, connected, connected" with a
  * "Reconnect all" under it reads as a fault the reader has to deal with, and
- * the sheet is opened just as often to switch machines as to repair one.
+ * the sheet is opened just as often to switch machines as to repair one. For
+ * the same reason the picker draws this block at all only when the set is not
+ * green: there the rows below are already the whole answer.
  */
 export function ConnectionStatusBlock({
   machines,
