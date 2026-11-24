@@ -6,6 +6,7 @@ import {
   DOUBLE_TAP_SCALE,
   MAX_SCALE,
   MIN_SCALE,
+  PAGE_SWIPE_MIN,
   ZoomableImage,
   clampScale,
   clampTranslation,
@@ -13,7 +14,7 @@ import {
   pinchDistance,
 } from "../components/ZoomableImage";
 
-function gestureHarness(options: { now?: () => number } = {}) {
+function gestureHarness(options: { now?: () => number; onPage?: (direction: -1 | 1) => void } = {}) {
   const create = jest.spyOn(PanResponder, "create");
   const zoom = createZoomController(options);
   const handlers = create.mock.calls.at(-1)![0];
@@ -173,6 +174,65 @@ test("resizing resets the preview to fit while same-size layout keeps the zoom",
 
 // The pan limits are what keep a zoomed picture from being dragged out of sight,
 // so they carry the safety of the interaction and are pinned here directly.
+
+test("a sideways flick at fit asks for the neighbour; a wobble or a vertical drag does not", () => {
+  jest.useFakeTimers();
+  try {
+    const onPage = jest.fn();
+    const { handlers, event, values } = gestureHarness({ onPage });
+    const start = event([200, 300]);
+    const at = (dx: number, dy: number) => ({ dx, dy, x0: 200, y0: 300 } as PanResponderGestureState);
+
+    // The finger drags the picture with it before the release commits anything.
+    handlers.onPanResponderGrant!(start, at(0, 0));
+    handlers.onPanResponderMove!(event([100, 300]), at(-100, 4));
+    expect(values()[0]).toBe(-100);
+    handlers.onPanResponderRelease!(start, at(-100, 4));
+    act(() => { jest.advanceTimersByTime(300); });
+    // Leftwards means the next picture.
+    expect(onPage).toHaveBeenCalledWith(1);
+
+    // The opposite direction asks for the previous one.
+    handlers.onPanResponderGrant!(start, at(0, 0));
+    handlers.onPanResponderMove!(event([300, 300]), at(100, 2));
+    handlers.onPanResponderRelease!(start, at(100, 2));
+    act(() => { jest.advanceTimersByTime(300); });
+    expect(onPage).toHaveBeenLastCalledWith(-1);
+
+    // Below the threshold, or mostly vertical: spring back, never a page.
+    onPage.mockClear();
+    handlers.onPanResponderGrant!(start, at(0, 0));
+    handlers.onPanResponderMove!(event([180, 300]), at(-20, 0));
+    handlers.onPanResponderRelease!(start, at(-20, 0));
+    handlers.onPanResponderGrant!(start, at(0, 0));
+    handlers.onPanResponderMove!(event([190, 390]), at(-10, 90));
+    handlers.onPanResponderRelease!(start, at(-10, 90));
+    act(() => { jest.advanceTimersByTime(300); });
+    expect(onPage).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a zoomed picture pans instead of turning the page", () => {
+  const onPage = jest.fn();
+  const { handlers, gesture, event } = gestureHarness({ onPage });
+  // Zoom in first.
+  handlers.onPanResponderGrant!(event([150, 300], [250, 300]), gesture);
+  handlers.onPanResponderMove!(event([100, 300], [300, 300]), gesture);
+  handlers.onPanResponderRelease!(event(), gesture);
+  // A single finger then pans the zoomed picture; it must not ask for a page.
+  handlers.onPanResponderGrant!(event([200, 300]), gesture);
+  handlers.onPanResponderMove!(event([100, 300]), { dx: -100, dy: 0 } as PanResponderGestureState);
+  handlers.onPanResponderRelease!(event([100, 300]), { dx: -100, dy: 0 } as PanResponderGestureState);
+  expect(onPage).not.toHaveBeenCalled();
+});
+
+test("a page swipe needs more than the tap slop", () => {
+  // The threshold is what keeps a picture that is also a finger-rest spot from
+  // flipping the page on every press; pin it so a tuning change is deliberate.
+  expect(PAGE_SWIPE_MIN).toBeGreaterThan(14);
+});
 
 test("a pinch is measured as the distance between the two touches", () => {
   expect(pinchDistance([{ locationX: 0, locationY: 0 }, { locationX: 3, locationY: 4 }])).toBe(5);
