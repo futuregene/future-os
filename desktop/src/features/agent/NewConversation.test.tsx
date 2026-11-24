@@ -303,6 +303,24 @@ describe("newConversation workspace menu", () => {
     expect(headerSubtitle()).toBe("Chat");
   });
 
+  // The two chips sit on a `surface-subtle` track, and in the dark rendition
+  // `surface` is 1.05:1 against that track — a chip painted with it read as
+  // unpainted, so the toggle looked like two labels. `surface-selected` is the
+  // token that keeps a visible step in every palette.
+  it("paints the chosen chip with the selected surface in both modes", () => {
+    const chip = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .filter(button => !button.closest("div.absolute"))
+      .find(button => button.textContent?.trim() === label)!;
+
+    render();
+    expect(chip("Alpha").className).toContain("bg-surface-selected");
+    expect(chip("Chat").className).not.toContain("bg-surface-selected");
+
+    act(() => chip("Chat").click());
+    expect(chip("Chat").className).toContain("bg-surface-selected");
+    expect(chip("Alpha").className).not.toContain("bg-surface-selected");
+  });
+
   it("re-pins the mode to workspace when the hook asks for it", async () => {
     render();
     // The workspace form's `cancel`/`submit` drive the parent's mode through
