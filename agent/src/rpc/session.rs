@@ -3,7 +3,9 @@ use crate::types::{AgentMessage, ConvertToLLM};
 use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 
+use super::standalone_compaction::StandaloneCompaction;
 use super::{ApprovalGate, SseBroadcaster};
+use crate::runtime::SchedulerWake;
 
 /// Consume scheduler wake notifications, applying each finished run to the
 /// session, until the session is dropped (Weak upgrade fails) or the
@@ -37,13 +39,23 @@ fn schedule_idle_history_release(session: std::sync::Weak<parking_lot::RwLock<Se
 
 async fn scheduler_wake_worker(
     session: std::sync::Weak<parking_lot::RwLock<ServerSession>>,
-    mut receiver: tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>,
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<SchedulerWake>,
 ) {
-    while let Some(finished) = receiver.recv().await {
+    while let Some(wake) = receiver.recv().await {
         let Some(session) = session.upgrade() else {
             return;
         };
-        session.write().on_scheduled_run_finished(&finished);
+        match wake {
+            SchedulerWake::RunFinished(finished) => {
+                session.write().on_scheduled_run_finished(&finished);
+            }
+            // A manual compaction just committed (or failed): whatever prompt was
+            // written into the session while it owned the transcript is at the
+            // front of the queue and has been waiting exactly for this moment.
+            SchedulerWake::CompactionFinished => {
+                session.write().on_compaction_finished();
+            }
+        }
         schedule_idle_history_release(std::sync::Arc::downgrade(&session));
     }
 }
@@ -118,7 +130,10 @@ pub struct ServerSession {
     /// Whether `active_checkpoint` reflects the durable history. A cold handle
     /// must load once; `None` with this set means "loaded, and there is no
     /// checkpoint", which is different from "not loaded yet".
-    pub(crate) checkpoint_loaded: std::sync::atomic::AtomicBool,
+    ///
+    /// Shared with the standalone compaction job, which reports a checkpoint it
+    /// loaded while running without this session's lock.
+    pub(crate) checkpoint_loaded: Arc<std::sync::atomic::AtomicBool>,
     /// Canonical model identifier for this session (e.g. "deepseek-v4-pro").
     /// Updated by `set_model`; read by prompt construction and compaction.
     pub model: String,
@@ -185,9 +200,8 @@ pub struct ServerSession {
     /// Admission fence set before queued/active cleanup begins. A deleting
     /// session stays addressable for retry, but can never accept new work.
     pub deleting: bool,
-    scheduler_wake_rx: Arc<
-        parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<crate::runtime::RunLease>>>,
-    >,
+    scheduler_wake_rx:
+        Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<SchedulerWake>>>>,
     /// ID of the session this one was forked from, if any.
     pub parent_session_id: String,
     /// Human-readable label (set via `/name`).  Empty until named.
@@ -432,7 +446,7 @@ impl ServerSession {
             history_loaded: true,
             history_loading: Default::default(),
             active_checkpoint,
-            checkpoint_loaded: std::sync::atomic::AtomicBool::new(true),
+            checkpoint_loaded: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             model: String::new(),
             thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
             auto_compaction: true,
@@ -481,6 +495,17 @@ impl ServerSession {
 
     pub fn session_id(&self) -> String {
         self.session_id.clone()
+    }
+
+    /// Ask the scheduler to look at its queue again, after a manual compaction's
+    /// fence opened.
+    ///
+    /// Called by the compaction worker thread, which has no tokio context and
+    /// therefore cannot start a run itself: the session's scheduler turn is the
+    /// one place that can, and it already runs on the Agent's runtime. Takes no
+    /// lock on the caller's side, so the worker can call it with a read guard.
+    pub(crate) fn wake_scheduler_after_compaction(&self) {
+        self.runtime.notify_compaction_finished();
     }
 
     /// Start the process-local scheduler worker once this session has been
@@ -560,11 +585,57 @@ impl ServerSession {
         if self.service_work.is_closed() {
             return;
         }
+        // The turn boundary: whatever waited behind the run that just ended is
+        // drained here, and its wait was that run's — a long turn does not age
+        // out the messages written into it.
+        self.start_queued_after_boundary(crate::runtime::QueueBoundary::AfterRun);
+    }
+
+    /// A manual compaction's fence just opened.
+    ///
+    /// The summary owns the transcript until it commits, so a prompt written
+    /// while it ran was accepted and receipted but held (see
+    /// [`Self::enqueue_prompt_with_model_context`]); this boundary is what starts
+    /// it. Nothing to do when a run already took the slot, when another
+    /// compaction claimed the session first, or when the session is shutting down
+    /// — the queue keeps its place and the next boundary starts it.
+    ///
+    /// The boundary is `AfterRun`, not `Idle`: the message waited behind the
+    /// summary, and a compaction that took ten minutes does not make the words a
+    /// reader wrote during it stale.
+    pub(crate) fn on_compaction_finished(&mut self) {
+        if self
+            .compaction_in_progress
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        if let Some(error) = self
+            .broadcaster
+            .persistence_error()
+            .or_else(|| self.persistence.last_error())
+        {
+            tracing::error!(
+                "scheduler paused after compaction because persistence is unavailable: {error}"
+            );
+            return;
+        }
+        if self.service_work.is_closed() {
+            return;
+        }
+        if self.runtime.snapshot().is_some()
+            || self.runtime.has_owned_task()
+            || self.scheduler.active().is_some()
+        {
+            return;
+        }
+        self.start_queued_after_boundary(crate::runtime::QueueBoundary::AfterRun);
+    }
+
+    /// Start whatever is at the front of the queue, across one boundary.
+    fn start_queued_after_boundary(&mut self, boundary: crate::runtime::QueueBoundary) {
         while let Some(next) = self.scheduler.next_startable() {
-            // The turn boundary: whatever waited behind the run that just ended
-            // is drained here, and its wait was that run's — a long turn does not
-            // age out the messages written into it.
-            match self.start_next_scheduled_after_run() {
+            match self.start_next_scheduled_at(boundary) {
                 Ok(_) => return,
                 Err(error) => {
                     // Parked rather than failed (an unreadable acceptance time is
@@ -1219,425 +1290,32 @@ impl ServerSession {
         instructions: &str,
         operation_id: String,
     ) -> Result<serde_json::Value> {
-        let context_window = self
-            .model_registry
-            .read()
-            .resolve(&self.model)
-            .map(|m| m.context_window)
-            .unwrap_or(1_000_000);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| anyhow::anyhow!("compaction runtime unavailable: {error}"))?;
-        runtime.block_on(self.compact_with_policy(
-            instructions,
-            crate::compaction::CompactionTrigger::Manual,
-            crate::compaction::CompactionPhase::Standalone,
-            context_window,
-            operation_id,
-        ))
+        self.compaction_job().run(instructions, operation_id)
+    }
+
+    /// Everything a manual compaction needs, owned, so it can run without this
+    /// session's lock.
+    ///
+    /// The `compact` worker takes this under a short read guard and then drops
+    /// it for the whole summary — which is what keeps the queue accepting
+    /// prompts while a long conversation is being summarised, and what lets
+    /// those prompts start the moment the fence opens.
+    pub(crate) fn compaction_job(&self) -> StandaloneCompaction {
+        StandaloneCompaction::capture(self)
     }
 
     /// Emit one compaction lifecycle signal.
     ///
-    /// A standalone (manual) compaction is not part of any run — `handle_compact`
-    /// refuses a busy session, so it only ever runs with no active run. Between
-    /// runs the broadcaster still holds the run that just settled, and that
-    /// run's journal is already retired: run completion hands it to the
-    /// compactor, which publishes a snapshot and deletes its raw rows. Stamping
-    /// the signal with that run made the append permanently impossible
-    /// (`cannot append to a compacted settled run`), so a standalone
-    /// compaction's signals go to the session scope instead: never compacted,
-    /// durable, and already the path clients replay for the signals that belong
-    /// to no run. An in-run compaction keeps its run stamp — its progress
-    /// belongs to that run's stream.
+    /// Delegate kept for the tests and for callers that hold the session; the
+    /// standalone worker calls [`super::standalone_compaction::broadcast_compaction_event`]
+    /// directly, because it runs without this session's lock.
+    #[cfg(test)]
     fn broadcast_compaction_event(
         &self,
         phase: crate::compaction::CompactionPhase,
         event: crate::agent::RunEvent,
     ) {
-        let Some(event) = super::prompt_helpers::run_event_to_sse(event) else {
-            return;
-        };
-        if phase == crate::compaction::CompactionPhase::Standalone {
-            self.broadcaster.broadcast_session(event);
-        } else {
-            self.broadcaster.broadcast(event);
-        }
-    }
-
-    async fn compact_with_policy(
-        &self,
-        instructions: &str,
-        trigger: crate::compaction::CompactionTrigger,
-        phase: crate::compaction::CompactionPhase,
-        context_window: i32,
-        operation_id: String,
-    ) -> Result<serde_json::Value> {
-        use std::sync::atomic::Ordering;
-        // A standalone manual compaction can arrive immediately after the
-        // session was reattached/recovered. Rehydrate from the append-only
-        // journal if its in-memory cache has not been populated yet; otherwise
-        // `/压缩` would incorrectly report "nothing to compact" for a visible
-        // conversation. Keep the restored cache for the next prompt as well.
-        let mut messages = self.messages.read().clone();
-        let mut loaded_checkpoint = None;
-        if !self.ephemeral || messages.is_empty() {
-            if let Ok(session) = self.session_manager.load(&self.session_id) {
-                let supports_images = self
-                    .model_registry
-                    .read()
-                    .request_model_accepts_images(&self.model);
-                messages =
-                    crate::session::entries_to_agent_messages(&session.entries, supports_images);
-                loaded_checkpoint = crate::session::latest_context_checkpoint(&session.entries);
-                *self.active_checkpoint.lock() = loaded_checkpoint.clone();
-                self.checkpoint_loaded
-                    .store(true, std::sync::atomic::Ordering::Release);
-                if !messages.is_empty() {
-                    *self.messages.write() = messages.clone();
-                }
-            }
-        }
-        let (reserve_tokens, keep_tokens) =
-            crate::compaction::context_token_budgets(context_window);
-        let active_checkpoint = loaded_checkpoint.or_else(|| self.active_checkpoint.lock().clone());
-        let reported = self
-            .last_prompt_tokens
-            .load(Ordering::Relaxed)
-            .try_into()
-            .ok()
-            .filter(|tokens: &u64| *tokens > 0);
-        let mut prompt = crate::compaction::project_prompt_context(
-            &messages,
-            active_checkpoint.as_ref(),
-            reported,
-            context_window.max(1) as u64,
-        );
-        let manager = crate::compaction::ContextManager {
-            enabled: true,
-            reserve_tokens,
-            keep_recent_tokens: keep_tokens,
-            context_window,
-            model: self.model.clone(),
-        };
-        let (interrupted, current_model, request_tools, provider) = {
-            let loop_ = match self.agent_loop.try_read() {
-                Ok(loop_) => loop_,
-                Err(_) => {
-                    let error = anyhow::anyhow!("session configuration is busy; retry /compact");
-                    self.compaction_in_progress.store(false, Ordering::Release);
-                    self.broadcast_compaction_event(
-                        phase,
-                        crate::agent::RunEvent::CompactionFailed {
-                            operation_id,
-                            trigger,
-                            phase,
-                            error: error.to_string(),
-                        },
-                    );
-                    return Err(error);
-                }
-            };
-            (
-                loop_.interrupt_flag.clone(),
-                loop_.model.clone(),
-                loop_.tools.clone(),
-                loop_.provider.clone(),
-            )
-        };
-        let (budget_system, _) = self.build_system_prompt(
-            &self.cwd,
-            request_tools.clone(),
-            &self.model,
-            &self.thinking_level,
-            self.no_context_files,
-        );
-        let tool_defs = request_tools
-            .iter()
-            .map(|tool| tool.def.clone())
-            .collect::<Vec<_>>();
-        // The summary request carries the system prompt this session's turns send. Providers
-        // cache on the request prefix, so a summary that differs from the turn that already
-        // paid for those tokens shares no prefix with it and the whole conversation is billed
-        // again. The automatic path does the same thing with the same expression
-        // (`run_loop.rs`); keeping them identical is the point. There is no longer a
-        // post-checkpoint addition to keep in step, so both simply send the session's prompt.
-        let budget_system = budget_system.as_str();
-        let summary_system_prompt = budget_system.to_string();
-        let max_output = self
-            .model_registry
-            .read()
-            .resolve(&self.model)
-            .map(|model| crate::models::effective_max_tokens(&model))
-            .unwrap_or(0);
-        crate::compaction::set_request_budget(&mut prompt, budget_system, &tool_defs, max_output);
-        let journal = (!self.ephemeral).then(|| crate::compaction::CompactionJournal::new(
-            self.session_manager.clone(), self.persistence.clone(), self.session_id.clone(),
-            serde_json::json!({"model":self.model,"thinking":self.thinking_level,"cwd":self.cwd,"tools":tool_defs,
-                "protocol":self.model_registry.read().resolve(&self.model).map(|m| serde_json::json!({"api":m.api,"baseUrl":m.base_url,"compat":m.compat}))}),
-        ));
-        let projected_messages_before = prompt.messages.len();
-        let manager = crate::compaction::ContextManager {
-            model: current_model,
-            ..manager
-        };
-        // Charge the session for the summary request. The compaction is synchronous here
-        // and the caller only receives an acknowledgement, so the cost is folded into the
-        // session's cumulative counters as it is incurred rather than reported per event.
-        let summary_usage: Arc<parking_lot::Mutex<Option<crate::types::Usage>>> =
-            Arc::new(parking_lot::Mutex::new(None));
-        let record_summary_usage = {
-            let usage = summary_usage.clone();
-            let tokens_in = self.tokens_in.clone();
-            let tokens_out = self.tokens_out.clone();
-            let cache_r = self.tokens_cache_r.clone();
-            let cache_w = self.tokens_cache_w.clone();
-            let cumulative_cost = self.cumulative_cost.clone();
-            let cumulative_cost_split = self.cumulative_cost_split.clone();
-            let registry = self.model_registry.clone();
-            let model = self.model.clone();
-            move |reported: &crate::types::Usage| {
-                // One billed request per attempt, so one record per attempt: the
-                // same rule the run loop applies to a model call.
-                crate::agent::add_request_usage(
-                    &tokens_in,
-                    &tokens_out,
-                    &cache_r,
-                    &cache_w,
-                    reported,
-                );
-                // The observer receives the final usage of EACH attempt, including
-                // charged retries and cancelled/failed summary streams.
-                let cost = reported.credit_cost.unwrap_or_else(|| {
-                    crate::agent::estimate_usage_cost_with(Some(&registry), &model, reported)
-                });
-                if cost > 0.0 {
-                    *cumulative_cost.lock() += cost;
-                }
-                // Priced with this request's model, like the run loop does.
-                let parts = crate::agent::usage_cost_split_with(Some(&registry), &model, reported);
-                if parts.iter().any(|amount| *amount > 0.0) {
-                    cumulative_cost_split.lock().add(parts);
-                }
-                *usage.lock() = Some(reported.clone());
-            }
-        };
-
-        // Summarised compaction: C's projection plus a handoff summary, so a
-        // user-initiated compaction gets the same retention as an automatic one. The
-        // system prompt is passed through so the summary request reuses the prefix the
-        // session already sent and can be served from the provider cache. The prompt passed
-        // here is the session's own, which is the base prompt at every point now that the
-        // post-checkpoint recall guidance is gone.
-        let mut prepared = crate::compaction::prepare_with_journal_and_summary(
-            &manager,
-            prompt,
-            &messages,
-            trigger,
-            phase,
-            Some(instructions),
-            interrupted.as_ref(),
-            Some(&|| {
-                self.broadcast_compaction_event(
-                    phase,
-                    crate::agent::RunEvent::CompactionStarted {
-                        operation_id: operation_id.clone(),
-                        trigger,
-                        phase,
-                    },
-                );
-            }),
-            journal.as_ref(),
-            &operation_id,
-            Some(provider.as_ref()),
-            Some(summary_system_prompt.as_str()),
-            &tool_defs,
-            Some(&record_summary_usage),
-            None,
-        )
-        .await
-        .map_err(anyhow::Error::from);
-
-        // Account for the summary request exactly as a model call is accounted for.
-        // The usage is always reported, even when it prices at zero (an unpriced
-        // model, or a provider that reports no credit_cost), so the request is never
-        // invisible; only the cost is conditional.
-        if let Some(usage) = summary_usage.lock().clone() {
-            // Journal the summary as the billed request it is, through the same
-            // `usage` event a model call produces: the session's per-category
-            // split is rebuilt from the journal for a record that has none, and
-            // the replay prices only `usage`/`model_changed` rows — a summary
-            // charged here but never journaled would leave that rebuilt split
-            // short by a whole request (h1-C2).
-            self.broadcast_compaction_event(
-                phase,
-                crate::agent::RunEvent::Model(crate::llm::schema::ModelStreamEvent::Usage(
-                    usage.clone(),
-                )),
-            );
-            let cost = usage.credit_cost.unwrap_or_else(|| {
-                crate::agent::estimate_usage_cost_with(
-                    Some(&self.model_registry),
-                    &self.model,
-                    &usage,
-                )
-            });
-            tracing::info!(
-                cost,
-                input = usage.prompt_tokens,
-                output = usage.completion_tokens,
-                cache_read = usage.cache_read_tokens.unwrap_or(0),
-                cache_write = usage.cache_write_tokens.unwrap_or(0),
-                "charged a manual compaction summary"
-            );
-            // Unlike a normal run, manual compaction has no run-end metadata
-            // commit. Save all cumulative counters even when preparation failed
-            // or was cancelled; a replay with no model call must not charge again.
-            if !self.ephemeral {
-                let fields = serde_json::json!({
-                    "tokens_in": self.tokens_in.load(Ordering::Relaxed),
-                    "tokens_out": self.tokens_out.load(Ordering::Relaxed),
-                    "tokens_cache_r": self.tokens_cache_r.load(Ordering::Relaxed),
-                    "tokens_cache_w": self.tokens_cache_w.load(Ordering::Relaxed),
-                    "total_cost": *self.cumulative_cost.lock(),
-                    "cost_split": serde_json::to_value(*self.cumulative_cost_split.lock())
-                        .unwrap_or(serde_json::Value::Null),
-                    // Only true when it covers the whole history; a load
-                    // re-prices the journal otherwise.
-                    "cost_split_complete": self
-                        .cost_split_complete
-                        .load(Ordering::Relaxed),
-                });
-                if let Err(error) = self.persistence.update_info_fields(
-                    fields
-                        .as_object()
-                        .expect("usage fields are an object")
-                        .clone(),
-                ) {
-                    if let Ok((_, Some(ticket))) = &prepared {
-                        ticket.fail(&error.to_string());
-                    }
-                    prepared = Err(error.context("could not persist manual compaction usage"));
-                }
-            }
-        }
-        let (prepared, ticket) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.compaction_in_progress.store(false, Ordering::Release);
-                self.broadcast_compaction_event(
-                    phase,
-                    crate::agent::RunEvent::CompactionFailed {
-                        operation_id,
-                        trigger,
-                        phase,
-                        error: error.to_string(),
-                    },
-                );
-                return Err(error);
-            }
-        };
-        if let Some(ticket) = &ticket {
-            if let Some(mut result) = ticket.cached_result() {
-                result["reused"] = serde_json::json!(true);
-                if result.get("checkpointId").is_some() {
-                    result["alreadyCompacted"] = serde_json::json!(true);
-                }
-                result["sourceOperationId"] = serde_json::json!(ticket.operation_id);
-                return Ok(result);
-            }
-        }
-        match prepared {
-            crate::compaction::ContextPreparation::Unchanged { prompt } => {
-                let result = serde_json::json!({
-                    "alreadyCompacted": active_checkpoint.is_some(),
-                    "tokensBefore": prompt.usage.estimated_input_tokens,
-                    "tokensAfter": prompt.usage.estimated_input_tokens,
-                    "summary": "",
-                    "messagesRemoved": 0,
-                });
-                if let Some(ticket) = &ticket {
-                    if let Err(error) = ticket.finish(None, result.clone()) {
-                        ticket.fail(&error.to_string());
-                        self.compaction_in_progress.store(false, Ordering::Release);
-                        self.broadcast_compaction_event(
-                            phase,
-                            crate::agent::RunEvent::CompactionFailed {
-                                operation_id,
-                                trigger,
-                                phase,
-                                error: error.to_string(),
-                            },
-                        );
-                        return Err(error);
-                    }
-                }
-                Ok(result)
-            }
-            crate::compaction::ContextPreparation::Compacted { checkpoint, prompt } => {
-                let summary = checkpoint
-                    .summary
-                    .iter()
-                    .filter_map(|b| match b {
-                        crate::types::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let result = serde_json::json!({"checkpointId":checkpoint.checkpoint_id,"tokensBefore":checkpoint.tokens_before,
-                    "tokensAfter":checkpoint.tokens_after,"summary":summary,
-                    "algorithmVersion":checkpoint.algorithm_version,"summaryOutcome":checkpoint.summary_outcome,
-                    "messagesRemoved":projected_messages_before.saturating_sub(prompt.messages.len()),
-                    "tokensSaved":checkpoint.tokens_before.saturating_sub(checkpoint.tokens_after),"protectedEntries":checkpoint.protected_entry_ids.len()});
-                let committed = if let Some(ticket) = &ticket {
-                    ticket.finish(Some(&checkpoint), result.clone())
-                } else {
-                    self.persistence
-                        .commit_checkpoint(crate::session::checkpoint_to_entry(&checkpoint))
-                };
-                if let Err(error) = committed {
-                    if let Some(ticket) = &ticket {
-                        ticket.fail(&error.to_string());
-                    }
-                    self.compaction_in_progress.store(false, Ordering::Release);
-                    self.broadcast_compaction_event(
-                        phase,
-                        crate::agent::RunEvent::CompactionFailed {
-                            operation_id,
-                            trigger,
-                            phase,
-                            error: error.to_string(),
-                        },
-                    );
-                    return Err(error);
-                }
-                self.last_prompt_tokens.store(0, Ordering::Relaxed);
-                if let Err(error) = self
-                    .persistence
-                    .update_info("last_prompt_tokens", serde_json::json!(0))
-                {
-                    tracing::warn!(%error, "checkpoint committed but usage-baseline persistence failed");
-                }
-                *self.active_checkpoint.lock() = Some((*checkpoint).clone());
-                if let Ok(loop_) = self.agent_loop.try_write() {
-                    *loop_.active_checkpoint.lock() = Some((*checkpoint).clone());
-                }
-                // Publish the terminal event only after the session admission
-                // fence is open again. Desktop enables Send when it observes
-                // this event, so this ordering prevents a transient
-                // `session_busy` on the very next command.
-                self.compaction_in_progress.store(false, Ordering::Release);
-                self.broadcast_compaction_event(
-                    phase,
-                    crate::agent::RunEvent::CompactionCommitted {
-                        operation_id,
-                        checkpoint: (*checkpoint).clone(),
-                    },
-                );
-                Ok(result)
-            }
-        }
+        super::standalone_compaction::broadcast_compaction_event(&self.broadcaster, phase, event);
     }
 
     pub fn set_auto_compaction(&mut self, enabled: bool) {
@@ -3147,11 +2825,11 @@ mod tests {
         let session = Arc::new(parking_lot::RwLock::new(make_test_session("wake-drop")));
         let weak = Arc::downgrade(&session);
         let (tx, rx) = mpsc::unbounded_channel();
-        tx.send(crate::runtime::RunLease {
+        tx.send(SchedulerWake::RunFinished(crate::runtime::RunLease {
             run_id: "r1".to_string(),
             epoch: 1,
             run_sequence: None,
-        })
+        }))
         .unwrap();
         drop(session);
         // The queued wake is still received, but the Weak upgrade fails — the

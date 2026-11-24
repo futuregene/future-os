@@ -378,11 +378,11 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                   ))
             : (
                 <>
-                  {/* Compaction blocks submission for as long as the agent
-                      takes to summarize (minutes on a long conversation) and
-                      the send button below has no room to say why. Without
-                      this the composer looks inert: typed text stays, Enter
-                      does nothing. */}
+                  {/* Compaction is not a reason to be disabled: the Agent accepts
+                      a prompt while it summarises and holds it in the session's
+                      queue, so a message written now runs when the summary
+                      settles. The line stays because a long summary still
+                      explains why the reply is slow. */}
                   {compactionPending
                     ? (
                         <span
@@ -427,20 +427,17 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                       || disabled
                       || preparing
                       || sendPending
-                      || compactionPending
                       || recommendPending
                     }
                     type="submit"
                     aria-label={recommendPending
                       ? t("composer.recommending")
-                      : compactionPending ? t("composer.compacting") : t("composer.send")}
+                      : t("composer.send")}
                     title={recommendPending
                       ? t("composer.recommending")
-                      : compactionPending
-                        ? t("composer.compacting")
-                        : preparing ? t("composer.preparing") : t("composer.send")}
+                      : preparing ? t("composer.preparing") : t("composer.send")}
                   >
-                    {recommendPending || compactionPending
+                    {recommendPending
                       ? <Loader2 className="size-3.5 animate-spin" />
                       : <ArrowUp className="size-3.5" />}
                   </button>

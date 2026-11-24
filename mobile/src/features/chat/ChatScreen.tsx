@@ -876,13 +876,10 @@ export function ChatScreen() {
     remote.desktopOnline,
     i18n.language,
   );
-  const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill, holdingSend }
+  const { sendFromComposer, dismissSuggestedSkill, installSuggestedSkill, installingSkill }
     = useComposerSubmission({
       remote, t, message, attachments, choice, clearChoice, restoring, setMessage, send: sendAndReadQueue,
       recommendation: skillRecommendation, scrollToLatest,
-      // One value for "the session is compacting": a manual compaction started
-      // here is this screen's own attempt until the Agent's flag catches up.
-      compacting: remote.compacting || compactContext.pending,
     });
 
   const paging = useTimelinePaging(
@@ -1178,7 +1175,6 @@ export function ChatScreen() {
                     setSelector={setSelector}
                     onCompactContext={compactContext.compact}
                     compactionPending={compactContext.pending}
-                    sendHolding={holdingSend}
                     archived={selectedSession?.archived === true}
                     onRestore={selectedSession?.archived === true
                       && Boolean(selectedSession.threadId)

@@ -532,6 +532,9 @@ fn completed_compact_retry_with_the_same_request_id_reuses_the_operation() {
         .load(std::sync::atomic::Ordering::Acquire));
 }
 
+/// A manual compaction owns the transcript, so commands that would change it
+/// mid-summary are refused up front rather than waiting behind a lock the
+/// summary holds for minutes. `prompt` is not one of them — see the test below.
 #[test]
 fn session_mutations_fail_before_waiting_for_compaction() {
     let state = make_app_state();
@@ -541,11 +544,73 @@ fn session_mutations_fail_before_waiting_for_compaction() {
         .compaction_in_progress
         .store(true, std::sync::atomic::Ordering::Release);
 
-    let resp = parse_response(&handle_command_internal(&state, make_cmd("prompt")));
+    let mut cmd = make_cmd("set_thinking_level");
+    cmd.level = "high".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], false);
     assert_eq!(resp["error_code"], "session_busy");
     assert_eq!(resp["error_data"]["busy_reason"], "compaction");
     assert_eq!(resp["error_data"]["retryable"], true);
+}
+
+/// The window a manual compaction opens is exactly when a reader watching a
+/// long conversation be summarised writes their next message. It is accepted and
+/// queued — a message is not a change to the transcript being summarised — and
+/// starts the moment the summary's fence opens.
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_written_during_compaction_is_queued_and_starts_when_it_ends() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let mut cmd = make_cmd("prompt");
+    cmd.message = "written while compacting".to_string();
+    cmd.busy_policy = "enqueue_if_busy".to_string();
+    cmd.client_request_id = "request-during-compaction".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["accepted_state"], "queued");
+    assert_eq!(
+        session.read().scheduler.queued()[0].client_request_id,
+        "request-during-compaction"
+    );
+    // Held, not started: a run would append to the transcript the summary is
+    // about to replace.
+    assert!(session.read().runtime.snapshot().is_none());
+    assert!(session.read().scheduler.active().is_none());
+    assert!(session
+        .read()
+        .messages
+        .read()
+        .iter()
+        .all(|message| message.text() != "written while compacting"));
+
+    // The summary committed: the fence opens and the held prompt runs. The
+    // fixture workspace is created here because starting a run validates it.
+    std::fs::create_dir_all(&session.read().cwd).unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    session.write().on_compaction_finished();
+    assert!(session.read().scheduler.queued().is_empty());
+    assert!(session
+        .read()
+        .messages
+        .read()
+        .iter()
+        .any(|message| message.role == "user" && message.text() == "written while compacting"));
+    let active_run = session
+        .read()
+        .scheduler
+        .active()
+        .map(|(active, _)| active.run_id);
+    if let Some(run_id) = active_run {
+        session.write().abort_run(Some(&run_id)).unwrap();
+    }
 }
 
 #[test]
@@ -591,6 +656,95 @@ fn compact_ack_does_not_wait_for_the_summary_provider() {
         terminal.event_type.as_str(),
         "compaction_committed" | "compaction_failed"
     ));
+}
+
+/// The end-to-end version of the hold: a real `compact` thread summarises, the
+/// reader writes into the session mid-summary, and the message runs when the
+/// summary settles — the wake goes from the worker thread through the session's
+/// scheduler channel, which is the only place that can start a run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_written_during_a_manual_compaction_runs_after_it() {
+    use std::sync::atomic::Ordering;
+
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    // Starting a run validates the session's workspace; a compaction-only test
+    // never starts one, so the fixture leaves it uncreated.
+    std::fs::create_dir_all(&session.read().cwd).unwrap();
+    {
+        let session = session.write();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SlowSummaryProvider);
+        let mut messages = session.messages.write();
+        for (role, text) in [("user", "investigate"), ("assistant", "working")] {
+            let mut message = AgentMessage {
+                role: role.to_string(),
+                content: vec![ContentBlock::text(text)],
+                ..Default::default()
+            };
+            message.ensure_journal_entry_id();
+            messages.push(message);
+        }
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|e| serde_json::to_value(e).unwrap())
+            .collect();
+        session
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace("default", entries)
+            .unwrap();
+    }
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("compact")));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert!(session
+        .read()
+        .compaction_in_progress
+        .load(Ordering::Acquire));
+
+    let mut cmd = make_cmd("prompt");
+    cmd.message = "written during the summary".to_string();
+    cmd.busy_policy = "enqueue_if_busy".to_string();
+    cmd.client_request_id = "request-during-summary".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["accepted_state"], "queued");
+
+    // The summary settles, the fence opens, and the held prompt runs.
+    let started = wait_until(|| {
+        session
+            .read()
+            .messages
+            .read()
+            .iter()
+            .any(|message| message.text() == "written during the summary")
+    })
+    .await;
+    assert!(
+        started,
+        "the prompt written mid-compaction runs when it ends"
+    );
+    let active_run = session
+        .read()
+        .scheduler
+        .active()
+        .map(|(active, _)| active.run_id);
+    if let Some(run_id) = active_run {
+        session.write().abort_run(Some(&run_id)).unwrap();
+    }
+}
+
+/// Poll `check` for up to ten seconds, letting the runtime make progress.
+async fn wait_until(mut check: impl FnMut() -> bool) -> bool {
+    for _ in 0..500 {
+        if check() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    false
 }
 
 #[test]
