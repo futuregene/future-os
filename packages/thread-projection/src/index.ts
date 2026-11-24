@@ -37,7 +37,7 @@ export {
   normalizeArgs,
   targetFromArgs,
 } from "./group";
-export { classifyAgentError, matchesSettledRun, previousUserMessageBefore } from "./format";
+export { classifyAgentError, isCancelledRunError, matchesSettledRun, previousUserMessageBefore } from "./format";
 export {
   approvalCommand,
   approvalDeletes,

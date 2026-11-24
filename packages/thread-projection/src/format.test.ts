@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyAgentError, matchesSettledRun, previousUserMessageBefore } from "./format";
+import { classifyAgentError, isCancelledRunError, matchesSettledRun, previousUserMessageBefore } from "./format";
 import type { AgentMessage } from "./model";
 
 function message(role: AgentMessage["role"], id: string): AgentMessage {
@@ -35,6 +35,19 @@ describe("previousUserMessageBefore", () => {
     // An out-of-range index reads past the end, skips the holes and keeps
     // scanning backward to the last real user message.
     expect(previousUserMessageBefore(messages, 99)?.id).toBe("u2");
+  });
+});
+
+describe("isCancelledRunError", () => {
+  it("recognises the Agent's cancellation code and nothing else", () => {
+    expect(isCancelledRunError("[RUN_CANCELLED] run was cancelled before it answered")).toBe(true);
+    expect(isCancelledRunError("  [run_cancelled] lowercase  ")).toBe(true);
+    // A provider that cancelled *generation* is a model failure, not a stop.
+    expect(isCancelledRunError("[PROVIDER_CANCELLED] provider cancelled generation")).toBe(false);
+    expect(isCancelledRunError("[UPSTREAM_DISCONNECTED] response interrupted")).toBe(false);
+    expect(isCancelledRunError("terminated by user")).toBe(false);
+    expect(isCancelledRunError("")).toBe(false);
+    expect(isCancelledRunError(undefined)).toBe(false);
   });
 });
 

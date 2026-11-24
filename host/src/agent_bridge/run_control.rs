@@ -407,6 +407,36 @@ pub async fn edit_queued_run_with_choice(
     Ok(())
 }
 
+/// Settle a run the Agent reported as *cancelled*.
+///
+/// Every client has a stop button now: a phone that took a conversation over, a
+/// second paired desktop, an IM `/stop`. Whichever one asks, the Agent ends the
+/// run `cancelled` and hands the other attached clients `complete: false` with
+/// termination kind `run_cancelled`. A client that owned the prompt but not the
+/// stop then settled the row `failed` with the raw `[RUN_CANCELLED] …` text, so
+/// the conversation read "模型服务异常 / 请稍后重试（[RUN_CANCELLED] …）" over a
+/// reply the reader had deliberately stopped (measured 2026-11-24: stopped from
+/// the phone, desktop showed a model-service failure). `cancelled` is what the
+/// local stop already writes, so one client's stop reads the same on all of
+/// them — the stopped reply, no retry-a-failure framing.
+pub(super) fn mark_run_cancelled_if_active(run_id: Option<&str>, error: &str) {
+    let Some(run_id) = run_id else {
+        return;
+    };
+    // Compare-and-set, like the failed twin: a run that already reached a
+    // terminal state keeps it, and a reply that completed is never rewritten.
+    if let Err(update_error) = store::update_run_status_if_active(store::UpdateRunStatusInput {
+        run_id: run_id.to_string(),
+        status: "cancelled".to_string(),
+        error_message: Some(error.to_string()),
+        error_type: Some("cancelled".to_string()),
+    }) {
+        tracing::error!(event = "mark_run_cancelled_if_active", error = %update_error,
+            "FutureOS run cancellation status update failed: {update_error}"
+        );
+    }
+}
+
 pub(super) fn mark_run_failed_if_active(run_id: Option<&str>, error: &str) {
     let Some(run_id) = run_id else {
         return;
@@ -1121,6 +1151,34 @@ mod tests {
             record.status, "completed",
             "the CAS writer never rewrites a terminal state"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stop_reported_by_the_agent_settles_the_row_cancelled() {
+        let home = TestHome::new("rc-mark-cancelled");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-1"));
+        let run = seed_run(&thread.id);
+
+        // Nothing to settle without a run id.
+        mark_run_cancelled_if_active(None, "[RUN_CANCELLED] run was cancelled before it answered");
+
+        mark_run_cancelled_if_active(
+            Some(&run.id),
+            "[RUN_CANCELLED] run was cancelled before it answered",
+        );
+        let record = store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(
+            record.status, "cancelled",
+            "a stop the Agent reports is a stop, not a failure"
+        );
+        assert_eq!(record.error_type.as_deref(), Some("cancelled"));
+        assert!(record.ended_at.is_some(), "a stopped run is terminal");
+
+        // The stop that already landed survives a later failure report.
+        mark_run_failed_if_active(Some(&run.id), "boom");
+        let record = store::get_run(&run.id).expect("run").expect("some");
+        assert_eq!(record.status, "cancelled");
     }
 
     #[tokio::test]
