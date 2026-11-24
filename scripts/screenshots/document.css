@@ -22,7 +22,8 @@
   .cover .meta { margin-top: 9px; color: #7a8492; font-size: 9.4pt; }
   .lead { background: #f6f8fb; border-left: 4px solid #2b6cff; padding: 11px 13px; margin: 12px 0 6px; }
   .lead p:last-child { margin-bottom: 0; }
-  section.item { break-inside: avoid-page; padding-top: 6px; }
+  section.item { break-inside: auto; padding-top: 6px; }
+  h2, h3 { break-after: avoid-page; }
   .prose { color: #262b33; }
   figure { margin: 7px 0 2px; text-align: center; }
   figure img {
@@ -35,6 +36,7 @@
   .pair { display: flex; gap: 12px; justify-content: center; align-items: flex-start; }
   .pair figure { flex: 1; }
   .pair img { max-height: 340px; width: auto; }
+  figure, .pair { break-inside: avoid; }
   .tag { display: inline-block; font-size: 8.2pt; color: #2b6cff; background: #eef3ff;
          border-radius: 10px; padding: 1px 8px; margin-left: 4px; vertical-align: 2px; }
   .tag.removed { color: #b3261e; background: #fdecea; }

@@ -25,6 +25,20 @@ export interface FriendlyAgentError {
 }
 
 /**
+ * Whether a raw run error says the run was *cancelled* rather than broken.
+ *
+ * The Agent labels a run somebody stopped with this code. A client that owned
+ * the prompt but not the stop once settled such a run as `failed` (a phone's
+ * stop button left the desktop reporting "模型服务异常 / 请稍后重试"), and those
+ * rows are still in the databases — so a reader that meets one must still draw
+ * the stopped reply, not a model failure. Rows written since record
+ * `cancelled` directly and never reach here.
+ */
+export function isCancelledRunError(raw?: string | null): boolean {
+  return /^\[RUN_CANCELLED\]/i.test(raw?.trim() ?? "");
+}
+
+/**
  * Pull a human-readable detail out of a raw agent/API error blob: prefer the
  * provider's own `message` field when the error embeds a JSON body, and drop
  * the diagnostic tail ("Request: N messages, N KB.") which is noise for users.

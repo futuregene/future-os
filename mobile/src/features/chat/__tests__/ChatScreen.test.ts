@@ -1959,6 +1959,27 @@ test("a desktop that takes no files refuses the row's '+' instead of opening a p
   expect(toast).toHaveBeenCalledWith("chat.attachmentsUnsupported");
 });
 
+/**
+ * A desktop too old to report a waiting message's files. The "+" is drawn because
+ * the row is, but files added here could not be sent with a message whose own
+ * files this phone cannot see (a re-send carries both) — so it says so instead
+ * of opening a picker that leads to a refused send.
+ */
+test("a row whose host reports no files says why its '+' adds none", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
+  // No `attachments` field at all: `undefined` is the old host's answer.
+  await mountWithQueue([queueRow({ runId: "run_a", text: "look" })]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueAddAttachments("run_a");
+  });
+
+  expect(tree.root.findAllByType(AttachmentSourceMenu).every(node => !node.props.visible)).toBe(true);
+  expect(remoteFiles.pickAttachments).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith("chat.queue.addDropsFiles");
+});
+
 test("a parked row offers 'send now', and pressing it releases that run", async () => {
   await mountWithQueue([
     queueRow({ runId: "run_parked", state: "stale:stale", text: "waited too long" }),
