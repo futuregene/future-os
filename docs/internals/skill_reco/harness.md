@@ -1,6 +1,6 @@
-# Jev skill recommendation demo
+# Skill recommendation demo (the `decider` route)
 
-Suggests a skill as you type: given a request, one TypeSafe Jev call (the System One model,
+Suggests a skill as you type: given a request, one `decider` call (the System One decision model,
 `POST /v1/systemone`) picks the best fit out of **all 141 skills** in the `skills/` submodule
 (15 builtin + 126 third-party) — or decides that none of them fit. A 100-question evaluation:
 **[evaluation.md](evaluation.md)**.
@@ -28,7 +28,7 @@ UI will be empty:
 roster: 141 skills (builtin 15 + third-party 126) from .../skills
 ```
 
-**The credential is the Future account's own key; there is no separate Jev key.** Recommendation
+**The credential is the Future account's own key; there is no separate decider key.** Recommendation
 goes through the platform gateway `{future_base_url}/v1/systemone` (currently
 `https://future-os.cn/api`) and authenticates as the **signed-in Future account** — so if you have
 signed in, you have it, and there is nothing to configure.
@@ -47,12 +47,13 @@ About the credential:
 
 The UI also starts without a credential: with no `future` entry in `auth.json` and no
 `FUTURE_API_KEY`, the server falls back to **local BM25 heuristic ranking** (the page labels it
-prominently as "local fallback" — that is not a Jev result), which is enough to look at the UI and
+prominently as "local fallback" — that is not a gateway result), which is enough to look at the UI and
 the wire shape.
 
 Other parameters (each with an identically named environment variable): `--port` / `PORT`,
 `--skills` / `SKILLS_ROOT`, `FUTURE_BASE_URL` / `FUTURE_MODEL` (the account's `base_url` wins, and
-the model is `pplx-decider-v1.2`), `LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD` (0.15 for Jev) / `NONE_GATE_THRESHOLD_DECIDER` (0.015),
+the model is `decider`, the backend-neutral route the gateway resolves to the deployed model),
+`LOCAL_ONLY=1` (force local fallback), `NONE_GATE_THRESHOLD` (0.15 for Jev) / `NONE_GATE_THRESHOLD_DECIDER` (0.015),
 `CHUNK_SIZE=254`, `SHORTLIST=3`, `MIN_QUERY_CHARS=6`.
 
 `SHORTLIST` **does not participate in the decision** (that reads the top-1 name plus the none
@@ -70,7 +71,7 @@ FUTURE_API_KEY=your-key node probe.mjs "extract the tables from this PDF into ma
 
 In the browser: six or more characters start a recommendation, and the call fires after a pause
 (⌘/Ctrl+Enter fires it immediately). The badge in the top-right shows the backend; `本地回退`
-("local fallback") means Jev was not used. Three tabs at the bottom: candidates / full ranking /
+("local fallback") means the gateway was not used. Three tabs at the bottom: candidates / full ranking /
 call details (the real request JSON and the usage).
 
 ## How it works
@@ -131,7 +132,7 @@ validation: 63/65 for both) but the Choice costs **about half the tokens** (8.8k
 question) — a noul has to repeat the question template and criteria 141 times, a Choice writes them
 once.
 
-**Why the Choice must offer `none_of_these`**: this is the crux. Jev will not say "none of these",
+**Why the Choice must offer `none_of_these`**: this is the crux. The model will not say "none of these",
 and a Choice without a none option **must** name a winner. Without one, the only way to decide
 whether to suggest at all was a separate "is a skill needed?" question, which produced 8–9 false
 refusals (first-answer correct down to 84.6%). Making "none of them" an **option** that competes
@@ -161,7 +162,7 @@ fails at startup with an explanation instead of returning 400 on every request.
 (`400 Too many choices. Must have at most 255 choices.`). So the cap is **254 skills per block**, not
 255.
 
-**Why refusal is a threshold**: Jev only emits probabilities, so "should I suggest anything" has to be
+**Why refusal is a threshold**: the model only emits probabilities, so "should I suggest anything" has to be
 decided by the caller. Making it an explicit threshold keeps it explainable (the UI shows "none
 probability 0.71 ≥ 0.15, so refused") and adjustable. The threshold is a wide plateau: 0.1–0.9 give
 nearly the same result, because questions that should be refused sit above 0.9 and ones that should
@@ -212,10 +213,10 @@ switching to a single Choice with none, and the serving path is that one call.
 scripts/skill_reco/
 ├── server.mjs        local HTTP server: static page + /api/suggest (the key stays in this process)
 ├── roster.mjs        reads SKILL.md from skills/builtin + skills/third-party into a catalogue
-├── suggest.mjs       one Choice + one gate threshold (Jev and the local fallback share the decision)
+├── suggest.mjs       one Choice + one gate threshold (the gateway and the local fallback share the decision)
 │                     only the serving path lives here: the removed call moved to bench/second-call.mjs
 ├── jev.mjs           System One HTTP client (credential from the Future account; 429/529 backoff)
-├── localRank.mjs     BM25 literal fallback when no credential is available (labelled; not Jev)
+├── localRank.mjs     BM25 literal fallback when no credential is available (labelled; not the gateway)
 ├── probe.mjs         command line: validate the credential + run the whole path
 ├── public/           front end (no build, no dependencies)
 ├── bench/second-call.mjs  the removed second call (kept so the evaluation reproduces; unused in serving)

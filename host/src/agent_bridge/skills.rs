@@ -110,7 +110,7 @@ pub struct SkillCandidate {
     pub description: String,
 }
 
-/// Ask the agent's Jev recommender for at most one skill matching `query`.
+/// Ask the agent's decider recommender for at most one skill matching `query`.
 /// Returns `None` on refusal, timeout, error, or when the feature is
 /// unavailable server-side — recommendation is best-effort, so every failure
 /// collapses to "no recommendation" and the caller submits normally.
