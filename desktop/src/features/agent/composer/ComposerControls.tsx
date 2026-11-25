@@ -86,6 +86,15 @@ interface Props {
   recommendPending: boolean;
   compactionPending: boolean;
   /**
+   * A send clicked while the context was compacting, waiting for the summary to
+   * finish (`Composer`'s hold).
+   *
+   * The click is taken rather than refused: the draft stays in the box, the send
+   * button reads busy, and the control row says why nothing has left yet — for
+   * minutes, on a long conversation.
+   */
+  sendHolding?: boolean;
+  /**
    * The send queue, while a reply is streaming (see `Composer.onEnqueue`).
    *
    * Present means the send button has something to ask: hold the draft in the
@@ -101,7 +110,7 @@ interface Props {
   };
 }
 
-export function ComposerControls({ disabled, preparing, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, queue }: Props) {
+export function ComposerControls({ disabled, preparing, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, sendHolding = false, queue }: Props) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
   const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
@@ -378,12 +387,25 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                   ))
             : (
                 <>
-                  {/* Compaction is not a reason to be disabled: the Agent accepts
-                      a prompt while it summarises and holds it in the session's
-                      queue, so a message written now runs when the summary
-                      settles. The line stays because a long summary still
-                      explains why the reply is slow. */}
-                  {compactionPending
+                  {/* A send is waiting for the compaction to finish (the
+                      composer holds it; see `Composer`): the one thing that
+                      needs saying, since the box still holds the words and the
+                      button looks busy. */}
+                  {sendHolding
+                    ? (
+                        <span
+                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
+                          role="status"
+                        >
+                          {t("composer.sendAfterCompaction")}
+                        </span>
+                      )
+                    : null}
+                  {/* Compaction is not a reason to be disabled: a send clicked
+                      while it runs is held by the composer and leaves when the
+                      summary does, so the line explains a slow reply rather than
+                      a dead button. Superseded by the hold's own line above. */}
+                  {compactionPending && !sendHolding
                     ? (
                         <span
                           className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
@@ -428,16 +450,22 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                       || preparing
                       || sendPending
                       || recommendPending
+                      || sendHolding
                     }
                     type="submit"
-                    aria-label={recommendPending
-                      ? t("composer.recommending")
-                      : t("composer.send")}
-                    title={recommendPending
-                      ? t("composer.recommending")
-                      : preparing ? t("composer.preparing") : t("composer.send")}
+                    aria-busy={sendHolding}
+                    aria-label={sendHolding
+                      ? t("composer.sendAfterCompaction")
+                      : recommendPending
+                        ? t("composer.recommending")
+                        : t("composer.send")}
+                    title={sendHolding
+                      ? t("composer.sendAfterCompaction")
+                      : recommendPending
+                        ? t("composer.recommending")
+                        : preparing ? t("composer.preparing") : t("composer.send")}
                   >
-                    {recommendPending
+                    {recommendPending || sendHolding
                       ? <Loader2 className="size-3.5 animate-spin" />
                       : <ArrowUp className="size-3.5" />}
                   </button>
