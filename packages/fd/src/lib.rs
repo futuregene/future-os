@@ -45,6 +45,7 @@ pub const WANT: u64 = 8192;
 /// A normal host runs with a soft limit of a few thousand; the cap only matters
 /// on a machine whose soft limit is a million, where probing the whole table
 /// would cost more than the line is worth.
+#[cfg(unix)]
 const MAX_PROBED_FDS: u64 = 65_536;
 
 /// The kernel's `RLIMIT_NOFILE` pair.

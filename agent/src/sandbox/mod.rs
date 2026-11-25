@@ -1743,8 +1743,10 @@ mod tests {
             .decode(payload)
             .expect("valid base64");
         let utf16: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         let decoded = String::from_utf16(&utf16).expect("valid utf-16");
         assert!(decoded.contains("& { Get-ChildItem } 2>&1"));
