@@ -198,7 +198,7 @@ pub struct RpcCommand {
     /// The user's first-turn text. Read when type == "suggest_skill".
     #[prost(string, tag = "180")]
     pub suggest_query: ::prost::alloc::string::String,
-    /// UNINSTALLED skill candidates offered to Jev (caller computes catalog −
+    /// UNINSTALLED skill candidates offered to the decision model (caller computes catalog −
     /// installed). The agent never sees installed skills.
     #[prost(message, repeated, tag = "181")]
     pub suggest_candidates: ::prost::alloc::vec::Vec<SkillCandidate>,
@@ -813,14 +813,14 @@ pub struct RefreshSkillsResult {
     #[prost(bool, tag = "3")]
     pub refreshed: bool,
 }
-/// suggest_skill: one skill candidate offered to Jev as a Choice option.
+/// suggest_skill: one skill candidate offered to the decision model as a Choice option.
 /// Field names mirror the wire JSON spelling (snake_case).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SkillCandidate {
     /// Unique skill id (= SKILL.md `name` = install dir name).
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Short description shown to Jev (truncated by the caller).
+    /// Short description shown to the decision model (truncated by the caller).
     #[prost(string, tag = "2")]
     pub description: ::prost::alloc::string::String,
 }

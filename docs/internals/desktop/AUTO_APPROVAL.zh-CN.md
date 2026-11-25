@@ -5,7 +5,7 @@
 状态：**已上线——桌面端与 TUI 提供 `auto` 档，手机端在配对的宿主声明 `auto_approval_v1` 时提供；生产误放行率仍需独立评测。**
 
 2026-10-09 实现说明：`auto` 保持三档 `SandboxTier` 不变，通过独立 `reviewer=model`
-启用。复用共享 Future System One API、账号凭据和 `jev` 路由，包装三个 Choice。
+启用。复用共享 Future System One API、账号凭据和 `decider` 路由，包装三个 Choice。
 整条命令脱沙箱沿用现有沙箱设计，后续随沙箱改进，不作为本功能前置条件。
 
 首版默认：参与放行决策的 confidence ≥ 0.75、总预算 30 秒、瞬时失败重试一次、全进程最多四项评估，
@@ -39,8 +39,8 @@ P(high)+P(medium)+P(low)，medium 为 P(high)+P(medium)，high 为 P(high)。Unk
 [Windows](SANDBOX/WINDOWS.zh-CN.md) 为准；本文只增加“规则要求询问时由谁审批”的能力，
 不扩大 OS 沙箱本身可以强制的边界。
 
-本文中的“审批模型”指 Jev System One 或提供同等 Choice、概率和置信度语义的实现。
-首版按 Jev 的能力设计，但通过内部 `ApprovalReviewer` 接口隔离供应商，不能把供应商
+本文中的“审批模型”指 `decider` 路由背后的 System One 决策模型，或提供同等 Choice、概率和置信度语义的实现。
+首版按该决策模型的能力设计，但通过内部 `ApprovalReviewer` 接口隔离供应商，不能把供应商
 响应格式直接扩散到工具、事件、数据库或 GUI。
 
 自动审批依赖已登录的 FutureOS 账号。未登录、登录失效或正在检查登录时，输入框和
@@ -188,7 +188,7 @@ off     -> SandboxTier::Off     + None
        ask   -> 按有效模式选审批者
                   User  -> 现有 blocking approval 流程
                   Model -> 自动审批请求
-                              -> Jev 三个 Choice
+                              -> decider 三个 Choice
                               -> schema/枚举校验
                               -> reason_code 不变量校正
                               -> 置信度收紧
@@ -278,13 +278,13 @@ query token。`NetworkIntent` 使用 `none / declared / possible / unknown`，�
 
 ### 6.1 单次请求、三个 Choice
 
-一次自动审批只发出一个 Jev 请求，在同一个结构化 state 上评估三个 Choice：
+一次自动审批只发出一个 decider 请求，在同一个结构化 state 上评估三个 Choice：
 
 1. `risk`
 2. `authorization`
 3. `reason_code`
 
-三个问题共享 state，但 Jev 会独立评估。不能假设 `reason_code = protected_secret_access`
+三个问题共享 state，但 decider 会独立评估。不能假设 `reason_code = protected_secret_access`
 自然保证 `risk >= high`；跨字段一致性必须由 FutureOS 代码强制。
 
 ### 6.2 State 与证据预算
@@ -378,8 +378,8 @@ shell 退出码；失败摘要也使用该投影。诊断中提到的路径放�
 | state + 最长问题 | 30,000 |
 | state + 全部问题 | 62,000 |
 
-[Jev 官方上下文限制](https://docs.typesafe.ai/models) 为 state + 最长问题 32k、
-state + 全部问题 64k；本地检查留有余量。未引入 Jev tokenizer，当前估算方法 `serialized_utf8_bytes_conservative_v1` 把序列化
+[上游 System One 上下文限制](https://docs.typesafe.ai/models) 为 state + 最长问题 32k、
+state + 全部问题 64k；本地检查留有余量。未引入上游 tokenizer，当前估算方法 `serialized_utf8_bytes_conservative_v1` 把序列化
 JSON 的每个 UTF-8 字节记为一个估算 token，包含转义、字段名、来源元数据和框架开销。
 这刻意少用上下文容量，不是精确 token 数，也不保证覆盖网关额外插入的文本。
 用户历史和背景各自使用 32 KiB 序列化记录缓冲上限，并缓存记录大小；历史缓冲同样
@@ -432,14 +432,14 @@ category can be selected reliably. Do not infer critical from uncertainty alone.
 }
 ```
 
-除此之外的字段一律拒绝。Jev 返回的 choice probabilities、confidence、请求 ID 和模型
+除此之外的字段一律拒绝。decider 返回的 choice probabilities、confidence、请求 ID 和模型
 版本属于 provider metadata，不进入上述业务 schema。
 
 ## 7. Reason code 目录
 
 ### 7.1 精简目录
 
-目录主要覆盖真正进入 `Ask` 的请求。规则已经 `allow` 的操作直接执行，不调用 Jev，
+目录主要覆盖真正进入 `Ask` 的请求。规则已经 `allow` 的操作直接执行，不调用 decider，
 也不补造模型 `risk = low` 记录。下表为原因对应的最低风险；实际后果更严重时仍可提高。
 
 | code | 主要场景 | 最低风险 |
@@ -622,7 +622,7 @@ struct ToolCallResult {
 工具调用，但不能修改历史评估，也不能把 annotation 当成新的用户授权。
 
 信息不足、provider 错误等没有有效评估的情况，annotation 的 risk/authorization 可为 null，
-并提供实际 status；不得捏造 low/high 值补齐评估。这里是宿主反馈格式，区别于 Jev 必须
+并提供实际 status；不得捏造 low/high 值补齐评估。这里是宿主反馈格式，区别于 decider 必须
 完整返回三个 Choice 的业务 schema。已批准工具随后执行失败时，is_error 仍由实际工具
 结果决定，批准不代表执行成功。
 
@@ -824,7 +824,7 @@ trait ApprovalReviewerClient {
 
 适配层负责：
 
-- 把三个版本化问题和 Choice 目录转换为 Jev 请求；
+- 把三个版本化问题和 Choice 目录转换为 decider 请求；
 - 传入同一份结构化 state；
 - 验证 HTTP/SDK 层响应完整性；
 - 提取 choices、probabilities、confidence、模型和 request ID；
@@ -858,7 +858,7 @@ API key 使用现有 provider 凭据安全存储与日志脱敏机制。审批 p
 | 异常 fail closed | 超时、解析错误、过期、取消和不确定都不执行 |
 
 FutureOS 的简化点是：审批模型只返回三个预设 Choice，不返回 allow/deny，不返回自由文本
-rationale，也不直接决定执行。这样既适合 Jev 这类 choice-only 模型，也让安全策略可以
+rationale，也不直接决定执行。这样既适合 decider 这类 choice-only 模型，也让安全策略可以
 由代码审查和单元测试覆盖。
 
 ## 16. 实现边界与建议改动位置
@@ -913,7 +913,7 @@ rationale，也不直接决定执行。这样既适合 Jev 这类 choice-only �
 - 用户明确授权高风险操作，验证 high + high 可放行、high + medium 拒绝；
 - critical 在任意授权下拒绝；信息不足不被伪装成 critical；
 - 内网及指定服务器敏感数据迁移归 high，接收方不明不自动推定泄露；
-- 普通 workspace Allow 不调用 Jev，密钥守卫和显式限制仍生效；
+- 普通 workspace Allow 不调用 decider，密钥守卫和显式限制仍生效；
 - 脱沙箱本身不抬高风险，实际系统权限变更按相应 code 处理；
 - 中文、英文、中英混合用户指令。
 
@@ -974,7 +974,7 @@ assessment，也不把旧决定重新执行。
 - 模型业务输出只包含 `risk`、`authorization`、`reason_code`。
 - 三项使用预设 Choice；最终 approve/reject 由程序决定。
 - high + high authorization 可以放行，critical 在任意授权下拒绝。
-- 敏感数据传输统一归 high；普通 workspace Allow 不调用 Jev，删除独立本地修改 code。
+- 敏感数据传输统一归 high；普通 workspace Allow 不调用 decider，删除独立本地修改 code。
 - 脱沙箱不自动归 high；信息不足返回 review_uncertain，不自动归 critical。
 - reason code 的新增和边界调整遵循第 7 节判断原则与评审方法。
 - 自动评估不进聊天流，只在 Runs 详情展示。
@@ -990,10 +990,10 @@ assessment，也不把旧决定重新执行。
 - 首版 medium + medium authorization 自动通过，需评测误放行率。
 - 计数窗口为同一 Run 内的工具/动作桶；仅模型拒绝计数，用户新消息开始新 Run 后重置。
 - shadow 阶段是否允许把评估展示给内部用户。
-- Jev 模型和 API 版本固定方式、成本预算及不可用时的设置页文案。
+- decider 路由和 API 版本固定方式、成本预算及不可用时的设置页文案。
 - 上线评测的具体误放行红线和中文样本占比。
 
-## 20. Jev 设计依据
+## 20. System One 设计依据
 
 本文使用以下公开能力与限制作为设计输入：
 
