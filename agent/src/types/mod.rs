@@ -507,6 +507,12 @@ impl AgentMessage {
     pub const STREAM_EPOCH_KEY: &'static str = "_future_stream_epoch";
     pub(crate) const FUSION_REPORT_PREFIX_KEY: &'static str = "fusion_report_prefix_entry_id";
     pub const JOURNAL_ENTRY_ID_KEY: &'static str = "_future_journal_entry_id";
+    /// Recovery synthesises messages for tool calls whose result never reached
+    /// the journal (see `session::repair`). Their own ID is invented and is
+    /// never a journal identity, so a checkpoint boundary may not use it; the
+    /// journal range they belong to is the entry that issued the call, named
+    /// here.
+    pub const JOURNAL_BOUNDARY_ID_KEY: &'static str = "_future_journal_boundary_entry_id";
 
     pub fn journal_entry_id(&self) -> Option<&str> {
         self.metadata
@@ -514,6 +520,19 @@ impl AgentMessage {
             .and_then(|metadata| metadata.get(Self::JOURNAL_ENTRY_ID_KEY))
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty())
+    }
+
+    /// The journal entry this message is covered by: its own entry, or for a
+    /// synthesised recovery message the entry that owns it. Compaction
+    /// boundaries must always be one of these, because only they exist in the
+    /// journal the checkpoint is committed against.
+    pub fn journal_boundary_entry_id(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(Self::JOURNAL_BOUNDARY_ID_KEY))
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .or_else(|| self.journal_entry_id())
     }
 
     pub fn ensure_journal_entry_id(&mut self) -> String {
