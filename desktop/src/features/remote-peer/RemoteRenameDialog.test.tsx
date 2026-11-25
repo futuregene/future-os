@@ -112,12 +112,18 @@ it("trims the name it sends", async () => {
   await view.unmount();
 });
 
-it("submits on Enter", async () => {
+it("leaves Enter in the field inert and saves only through the button", async () => {
+  // Only the button writes: a keystroke in the name field is editing.
   const view = await mount();
   await view.setValue("Keyboard name");
   await view.pressEnter();
   await settle();
 
+  expect(rename).not.toHaveBeenCalled();
+  expect(view.onClose).not.toHaveBeenCalled();
+
+  await act(async () => view.button("Save")!.click());
+  await settle();
   expect(rename).toHaveBeenCalledTimes(1);
   await view.unmount();
 });
@@ -126,7 +132,7 @@ it("refuses an empty name", async () => {
   const view = await mount();
   await view.setValue("   ");
   expect(view.button("Save")!.disabled).toBe(true);
-  await view.pressEnter();
+  await act(async () => view.button("Save")!.click());
   await settle();
 
   expect(rename).not.toHaveBeenCalled();
@@ -241,11 +247,11 @@ it("keeps the field when the host cannot name it", async () => {
 });
 
 /**
- * Enter while a title is being generated must not save.
+ * A generated title in flight must not be overtaken by a save.
  *
- * The Save button is disabled during generation, but Enter reaches `submit`
- * directly — and saving here would store whatever the field held *before* the
- * generated title arrived.
+ * The Save button is disabled for exactly as long as the generator runs, and
+ * the field's Enter does not submit at all — saving here would store whatever
+ * the field held *before* the generated title arrived.
  */
 it("refuses to save while a title is still being generated", async () => {
   let settle: ((title: string) => void) | null = null;
@@ -255,6 +261,7 @@ it("refuses to save while a title is still being generated", async () => {
   const view = await mount();
 
   await act(async () => view.button("Auto-generate")!.click());
+  expect(view.button("Save")!.disabled).toBe(true);
   await view.pressEnter();
 
   expect(rename).not.toHaveBeenCalled();

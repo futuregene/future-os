@@ -16,6 +16,29 @@ static SINK: OnceLock<fn(AgentEvent<'_>)> = OnceLock::new();
 pub fn attach(sink: fn(AgentEvent<'_>)) {
     let _ = SINK.set(sink);
 }
+
+/// Everything published in this process, drained by a test.
+///
+/// Independent of [`SINK`] on purpose: a test asserting that an event did *not*
+/// reach remote clients must not depend on which sink happened to be installed
+/// first (the e2e fixtures install the production one), and the filter being
+/// asserted is decided before the sink is chosen.
+#[cfg(test)]
+static RECORDED: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The `(session id, event type)` pairs published for one session since the
+/// last drain.
+#[cfg(test)]
+pub(crate) fn recorded(session_id: &str) -> Vec<String> {
+    let mut recorded = RECORDED.lock().unwrap_or_else(|error| error.into_inner());
+    // Take only this session's rows: tests run in one process, and removing
+    // everything would empty another session's assertion mid-flight.
+    let (mine, others): (Vec<_>, Vec<_>) = std::mem::take(&mut *recorded)
+        .into_iter()
+        .partition(|(session, _)| session == session_id);
+    *recorded = others;
+    mine.into_iter().map(|(_, event_type)| event_type).collect()
+}
 #[allow(clippy::too_many_arguments)]
 pub fn publish_event(
     session_id: &str,
@@ -29,6 +52,11 @@ pub fn publish_event(
     session_idx: i64,
     run_sequence: i64,
 ) {
+    #[cfg(test)]
+    RECORDED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((session_id.to_string(), event_type.to_string()));
     if let Some(sink) = SINK.get() {
         sink(AgentEvent {
             session_id,
