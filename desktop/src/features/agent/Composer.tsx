@@ -67,6 +67,18 @@ export interface ComposerHandle {
 /** Drag-over verdict for the drop zone. */
 export type ComposerDragState = "accept" | "reject" | null;
 
+/**
+ * The draft a click on send carried while the context was being compacted.
+ *
+ * It is a snapshot on purpose: the send goes out with the words that were in the
+ * box when the button was pressed, and only while the box still holds them (see
+ * the release effect in `ComposerImpl`).
+ */
+interface HeldSend {
+  text: string;
+  attachments: readonly MessageAttachment[];
+}
+
 /** A skill recommendation shown above the composer (new-conversation first turn). */
 export interface SkillRecommendationCard {
   name: string;
@@ -283,6 +295,11 @@ function ComposerImpl({
   const [sendPending, setSendPending] = useState(false);
   const [contextActionPending, setContextActionPending] = useState(false);
   const compactionPending = contextActionPending || compactionInProgress;
+  // A send clicked while the context was compacting, waiting for the summary to
+  // finish (`heldSendRef`) — the button reads busy and the control row says why
+  // nothing has left yet.
+  const [holdingSend, setHoldingSend] = useState(false);
+  const heldSendRef = useRef<HeldSend | null>(null);
   // True while a recommend round-trip holds submission. Both a ref and a state:
   // the ref guards re-entrant submits synchronously (`submitValue` is called
   // from an event, not a render), the state drives the locked input + spinner
@@ -320,6 +337,12 @@ function ComposerImpl({
     setSendPending(false);
     setContextActionPending(false);
     setQueueChoiceOpen(false);
+    // A hold belongs to the conversation it was clicked in: switching away from
+    // it ends the wait without delivering (the draft stays where it was written).
+    // Clearing the snapshot here rather than at the fence is what makes coming
+    // back to this conversation later send nothing either.
+    heldSendRef.current = null;
+    setHoldingSend(false);
   }, [draftKey]);
 
   const fusionAvailable = useFusionAvailability();
@@ -610,6 +633,18 @@ function ComposerImpl({
       setQueueChoiceOpen(true);
       return;
     }
+    // A compaction owns the session for as long as the summary takes — minutes
+    // on a long conversation. Take the click instead of handing the prompt over:
+    // the Agent would hold it in its own queue, where this window shows no sign
+    // of it and the message only runs once the summary is done anyway. The draft
+    // stays in the box, the button reads busy, and the words that were here when
+    // it was pressed leave the moment the fence opens
+    // (`holdSendThroughCompaction` / the release effect below). A second click is
+    // not a second message, and a draft edited meanwhile is not sent at all.
+    if (compactionPending && !sending && !disabled && !sendPending) {
+      holdSendThroughCompaction(trimmed, attachmentsRef.current);
+      return;
+    }
     // `preparing` keeps the draft: submission is not refused as "nothing to
     // do", it is refused because the request cannot be built yet, and the
     // control row beside the button says so (`t("composer.preparing")`).
@@ -667,6 +702,66 @@ function ComposerImpl({
 
     sendNow();
   }
+
+  /**
+   * Take a send that landed while the context was compacting.
+   *
+   * Nothing leaves here: the draft stays in the box exactly as the reader sees
+   * it, and the snapshot taken now is what goes out when the fence opens — if it
+   * is still what was clicked on. The wait is local (a state in this composer),
+   * not the Agent's queue: a held message dies with the window, which is the
+   * behaviour the phone ships and the one this window matches; the browser is
+   * already gone, so nobody is left waiting for it to arrive.
+   */
+  function holdSendThroughCompaction(text: string, submittedAttachments: readonly MessageAttachment[]) {
+    // One held send at a time: the busy button is not a second message.
+    if (heldSendRef.current || !editorRef.current)
+      return;
+    heldSendRef.current = { attachments: submittedAttachments, text };
+    setHoldingSend(true);
+  }
+
+  // The same submit the click would have made, now that the fence is open. A
+  // committed ref because the release effect below must call the newest one.
+  const submitNowRef = useCommittedRef(submitValue);
+
+  /**
+   * The compaction fence opened: let go of the held send.
+   *
+   * It goes out only while the box still holds what was clicked on. Anything
+   * else ends the wait without delivering, and in every one of those endings the
+   * draft stays where the reader can see it:
+   *
+   * - the draft was edited during the wait (text, attachments or the card's
+   *   answer, all of which change `getContent()`/`attachmentsRef`): the reader's
+   *   own words win and are not sent on their behalf;
+   * - the reader switched conversations: the `[draftKey]` reset above already
+   *   dropped the snapshot, because each draft belongs to its own key and coming
+   *   back must not fire a message that was clicked in another one;
+   * - a run took the session in the meantime: this is not a send any more, and
+   *   the composer is about to offer the queue for it;
+   * - the window closed: nothing runs this effect, and the draft is already
+   *   persisted for the next visit.
+   */
+  useEffect(() => {
+    if (compactionPending)
+      return;
+    const held = heldSendRef.current;
+    if (!held)
+      return;
+    heldSendRef.current = null;
+    setHoldingSend(false);
+    if (!editorRef.current)
+      return;
+    if ((editorRef.current.getContent() ?? "").trim() !== held.text
+      || attachmentsRef.current !== held.attachments) {
+      return;
+    }
+    const state = sendStateRef.current;
+    if (state.disabled || state.preparing || state.sending)
+      return;
+    submitNowRef.current();
+  }, [attachmentsRef, compactionPending, sendStateRef, submitNowRef]);
 
   /**
    * Take the submitted draft out of the box now that it has gone somewhere
@@ -1008,6 +1103,7 @@ function ComposerImpl({
               sendPending={sendPending}
               recommendPending={recommendPending}
               compactionPending={Boolean(compactionPending)}
+              sendHolding={holdingSend}
               queue={onEnqueue
                 ? {
                     choiceOpen: queueChoiceOpen,

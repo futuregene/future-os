@@ -245,6 +245,7 @@
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
     "compacting": "正在压缩上下文…",
+    "sendAfterCompaction": "压缩完成后发送…",
     "recommending": "正在匹配技能…",
     "preparing": "正在加载模型…",
     "compactionNotNeeded": "当前没有可压缩的对话上下文。",
