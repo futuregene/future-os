@@ -23,6 +23,9 @@
 
 /// Fence language of a choice card; every other fence keeps its old meaning.
 const CHOICE_FENCE: &str = "futureos-choice";
+/// The same language with the spelling folded (`CHOICE_LANGUAGE` in
+/// `packages/markdown/src/choiceTagBlocks.ts`).
+const CHOICE_LANGUAGE: &str = "futureoschoice";
 /// §3: fewer than two rows is not a card, and seven rows are a plan. The upper
 /// bound matches `CHOICE_MAX_OPTIONS` in `packages/markdown/src/parseFutureMarkdown.ts`:
 /// the badge may only promise a card the client will actually draw.
@@ -146,6 +149,23 @@ fn strip_inline_code(line: &str) -> String {
     out
 }
 
+/// Is `info` the card's fence language, spelling folded?
+///
+/// Case and the `-`/`_` between the two words are the ways a writer differs
+/// without meaning anything different (`FutureOS-Choice`, `futureos_choice`);
+/// the renderer folds them the same way (`isChoiceFence`), so one block cannot
+/// draw a card on one reader and a code block on the other. Anything else still
+/// has to match: `futureos-choice-x` is some other language.
+fn is_choice_fence(info: &str) -> bool {
+    let folded: String = info
+        .trim()
+        .chars()
+        .filter(|ch| *ch != '-' && *ch != '_')
+        .flat_map(char::to_lowercase)
+        .collect();
+    folded == CHOICE_LANGUAGE
+}
+
 /// Closing-fence line indices of every choice card in `lines`, in order.
 fn choice_card_ends(lines: &[&str]) -> Vec<usize> {
     let mut open: Option<Fence> = None;
@@ -159,7 +179,7 @@ fn choice_card_ends(lines: &[&str]) -> Vec<usize> {
             }
             Some(fence) => {
                 if closes(line, fence) {
-                    if fence.info.eq_ignore_ascii_case(CHOICE_FENCE)
+                    if is_choice_fence(&fence.info)
                         && card_body_offers_choice(&lines[fence.body_start..index])
                     {
                         ends.push(index);
@@ -176,11 +196,14 @@ fn choice_card_ends(lines: &[&str]) -> Vec<usize> {
 /// they stand for, which is the one shape both this reader and the renderer's
 /// parser (`packages/markdown/src/choiceTagBlocks.ts`) accept.
 ///
-/// A pair counts only when both tags are present, at the same nesting depth as
+/// A pair counts when both tags are present, at the same nesting depth as
 /// everything else here: an opening tag inside another fence is a *quote* of the
-/// form, not an attempt at a card, and an unpaired tag is left exactly as
-/// written — `choice_syntax_without_card` is what makes that case loud instead
-/// of silent.
+/// form, not an attempt at a card. The pair may sit right under a prose line —
+/// the renderer splits the paragraph there, and this reader only looks at where
+/// the fence starts, so the two agree (2026-11-25). An opening tag that ends the
+/// reply is read as the card whose closer was forgotten (`unclosed_to_end`).
+/// Anything else unpaired is left exactly as written — `choice_syntax_without_card`
+/// is what makes that case loud instead of silent.
 ///
 /// The bare fence line immediately after a closing tag is the same malformed
 /// emission's attempt at a fence closer (a live reply ended `</futureos-choice>`
@@ -208,7 +231,9 @@ fn normalize_choice_tags(text: &str) -> String {
             continue;
         }
         if is_tag(line, OPEN_TAG) {
-            if let Some(close) = find_close_tag(&lines, index + 1) {
+            let close =
+                find_close_tag(&lines, index + 1).or_else(|| unclosed_to_end(&lines, index + 1));
+            if let Some(close) = close {
                 out.push(OPEN_FENCE);
                 out.extend(lines[index + 1..close].iter().copied());
                 out.push("```");
@@ -244,6 +269,47 @@ fn find_close_tag(lines: &[&str], from: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// The end of the reply, read as the closer an opening tag never got.
+///
+/// A forgotten `</futureos-choice>` at the end of a reply has nothing left to
+/// swallow, and a writer that ends with a list of `option:` rows meant a card
+/// (the 2026-11-25 reply). The same shape mid-reply is *not* read: there the
+/// missing closer would take whatever follows with it, so it stays text and the
+/// guard reports it. A body that is not option rows stays text either way.
+fn unclosed_to_end(lines: &[&str], from: usize) -> Option<usize> {
+    for (offset, line) in lines[from..].iter().enumerate() {
+        if read_fence(line, from + offset).is_some() || is_tag(line, OPEN_TAG) {
+            return None;
+        }
+    }
+    let rows = lines[from..]
+        .iter()
+        .filter(|line| directive_entry(line).is_some_and(|(key, _)| key == "option"))
+        .count();
+    if rows < MIN_OPTIONS || !lines[from..].iter().all(|line| is_card_field(line)) {
+        return None;
+    }
+    Some(lines.len())
+}
+
+/// Is `line` one of the card's own fields (`title:`, `mode:`, `context:`, `hint:`,
+/// `option:`) or blank?
+///
+/// The unclosed-tag case needs it: with nothing after the tag to mark the end of
+/// the card, a body of *prose* is the tag the reply prints, and reading it as a
+/// body would swallow the sentence the reader wrote next.
+fn is_card_field(line: &str) -> bool {
+    if line.trim().is_empty() {
+        return true;
+    }
+    directive_entry(line).is_some_and(|(key, _)| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "title" | "mode" | "context" | "hint" | "option"
+        )
+    })
 }
 
 /// A fence run with nothing after it: what a writer meant as a closer.
@@ -539,17 +605,65 @@ mod tests {
         )));
     }
 
+    /// An opening tag at the end of the reply reads as a card: nothing follows
+    /// it, and a body of option rows is a card the closer was forgotten from
+    /// (the 2026-11-25 reply ended that way).
     #[test]
-    fn an_unpaired_tag_is_not_a_card_and_is_reported() {
-        let open_only = format!("<futureos-choice>\n{TWO}\n");
-        assert!(!reply_offers_choice(&open_only));
-        assert!(!contains_choice_card(&open_only));
-        assert!(choice_syntax_without_card(&open_only));
+    fn an_opening_tag_that_ends_the_reply_reads_as_a_card() {
+        let open_only = format!("还有一点：\n\n<futureos-choice>\n{TWO}");
+        assert!(reply_offers_choice(&open_only));
+        assert!(contains_choice_card(&open_only));
+        assert!(!choice_syntax_without_card(&open_only));
+    }
 
+    #[test]
+    fn an_unpaired_tag_with_something_after_it_is_not_a_card_and_is_reported() {
+        // Mid-reply the missing closer would swallow what follows, so it stays
+        // text — and the guard says so.
+        let mid_reply = format!("<futureos-choice>\n{TWO}\n\n还有别的吗？");
+        assert!(!reply_offers_choice(&mid_reply));
+        assert!(!contains_choice_card(&mid_reply));
+        assert!(choice_syntax_without_card(&mid_reply));
+
+        // A body that is not option rows is the tag the reply prints, not an
+        // attempt at a card.
+        let prose_only = "<futureos-choice>\ntitle: T\n这里只是一段话";
+        assert!(!contains_choice_card(prose_only));
+        assert!(choice_syntax_without_card(prose_only));
+
+        // A closing tag with no opening one is never a card.
         let close_only = format!("{TWO}\n</futureos-choice>\n");
         assert!(!reply_offers_choice(&close_only));
-        assert!(!contains_choice_card(&close_only));
         assert!(choice_syntax_without_card(&close_only));
+    }
+
+    #[test]
+    fn a_pair_attached_to_the_line_before_it_is_still_a_card() {
+        // The 2026-11-25 reply wrote `…再问一遍：` and the tag on the next line,
+        // no blank line between. The renderer splits the paragraph there; this
+        // reader sees the fence wherever the line starts, so the two agree.
+        let attached = format!("还有一点：\n<futureos-choice>\n{TWO}\n</futureos-choice>\n");
+        assert!(reply_offers_choice(&attached));
+        assert_eq!(
+            contains_choice_card(&attached),
+            contains_choice_card(&format!(
+                "还有一点：\n\n<futureos-choice>\n{TWO}\n</futureos-choice>\n"
+            ))
+        );
+    }
+
+    #[test]
+    fn the_language_folds_the_ways_a_writer_spells_it() {
+        for info in ["FUTUREOS-CHOICE", "futureos_choice"] {
+            assert!(
+                reply_offers_choice(&format!("```{info}\n{TWO}\n```\n")),
+                "{info}"
+            );
+        }
+        // Anything past that is another language, not a card.
+        assert!(!reply_offers_choice(&format!(
+            "```futureos-choice-x\n{TWO}\n```\n"
+        )));
     }
 
     #[test]
@@ -592,10 +706,12 @@ mod tests {
     /// when a reply names the card and draws none.
     #[test]
     fn the_guard_prints_a_greppable_warning() {
-        let open_only = format!("<futureos-choice>\n{TWO}\n");
+        // An unpaired tag mid-reply: the shape the reader still gets as source
+        // (the reply ends with prose, so the missing closer is not forgiven).
+        let mid_reply = format!("<futureos-choice>\n{TWO}\n\n还有别的吗？");
         let mut reported = false;
         let output = logged(|| {
-            reported = report_unrecognized_choice("run-1", &open_only);
+            reported = report_unrecognized_choice("run-1", &mid_reply);
         });
         assert!(reported);
         assert!(
