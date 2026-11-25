@@ -62,6 +62,13 @@ export function WorkspaceModal({
           </button>
           <TextInput
             onChange={event => onDisplayNameChange(event.target.value)}
+            // Enter keeps to the field it was pressed in: only the button
+            // submits. Left alone, a form's single text input triggers the
+            // implicit submission and opens the workspace mid-name.
+            onKeyDown={(event) => {
+              if (event.key === "Enter")
+                event.preventDefault();
+            }}
             placeholder={t("newConversation.modal.displayNameOpen")}
             value={displayName}
           />

@@ -106,7 +106,9 @@ In the AST the card is its own node type (not a `futureEmbed` reference), becaus
 | Duplicate, malformed or over-long `id` | Drop that line; if fewer than 2 remain, degrade the block |
 | Missing `title` | Fall back to the first option's label; still empty ⇒ degrade |
 | Fence mid-reply (not the last block) | Renders normally but read-only (the "last card" rule in §2) |
-| A closed `<futureos-choice>` tag pair | Read as the fence it stands for, then parsed by the same rules (2026-11-24). Half a pair or the bare word stays text, and the agent logs `choice card syntax without a card` |
+| A closed `<futureos-choice>` tag pair | Read as the fence it stands for, then parsed by the same rules (2026-11-24). The pair may share its paragraph with the prose line before it — the paragraph is split, prose kept (2026-11-25) |
+| An opening tag that ends the reply | Read as the card whose closer was forgotten: nothing follows it, and the body must be card fields with 2+ rows. The same shape mid-reply, or half a pair, stays text and the agent logs `choice card syntax without a card` |
+| The fence language, spelled differently | Case, surrounding space and `-`/`_` fold away (`FutureOS-Choice`, `futureos_choice`). Anything past that is another language, not a card |
 | Unknown field | Ignored |
 
 **"How many rows the prompt asks for" and "how many the client draws" are two numbers** (2026-11-20). The prompt still asks for 2–4: that is the test of *whether* a block should be a card. `CHOICE_MAX_OPTIONS` is 6, because it answers a different question — whether a block that already exists can be drawn at all. The two used to be the same 4, and the difference was paid for on 2026-11-20: a live reply offered five directions and the phone received not a card but `option:` source — monospace, clipped at the right edge, readable only by panning. A whole card lost to a row count only the guidance cared about.

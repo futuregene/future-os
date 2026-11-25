@@ -102,6 +102,24 @@ pub fn quote_windows_command_line_argument(value: &str) -> String {
     result
 }
 
+/// How long a Windows test may wait for a real `powershell.exe` to answer.
+///
+/// This is a hang guard, not a latency assertion: what the launcher tests pin
+/// is the *content* of what the launcher reports, and the bound exists only so
+/// a PowerShell that never returns cannot wedge the suite. It has already been
+/// raised once for that reason (30 s → 3 min, 2026-10-22), and on 2026-11-25 it
+/// measured the runner again: at 3 min this test timed out while its sibling
+/// `tests::launch_ok_when_powershell_exits_zero` — which has no bound at all —
+/// passed only after **201 s** on the same runner (same job: 15m53s against
+/// 8m52s for the previous run of it). So the *cold start*, not the launcher,
+/// was the slow part, and every other budget in this file and in
+/// `commands::browser_tools` is the same guard over the same operation.
+///
+/// Ten minutes is still far below "hung" and well above any cold start a
+/// runner has produced.
+#[cfg(all(test, windows))]
+pub(crate) const POWERSHELL_TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// `quotePowerShellLiteral(value)` — single-quoted with doubled quotes.
 fn quote_powershell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
@@ -290,25 +308,20 @@ mod tests {
     /// keeps that from being anyone else's problem. A timeout here is a test
     /// failure with a message that says so, not a hung suite.
     ///
-    /// The bound is deliberately loose. It is not a latency assertion — what
-    /// this test pins is the *content* of the failure the launcher reports, and
-    /// the bound exists only so a hang cannot wedge the suite. At 30 s it was
-    /// measuring the runner instead: on a loaded Windows runner (1286 tests,
-    /// several of them spawning processes) a cold `powershell.exe` took longer
-    /// than that, and the test failed with `PowerShell must answer within 30s:
-    /// Elapsed(())` on one attempt and passed on the next. Three minutes is
-    /// still far below "hung" and well above any real cold start.
+    /// The bound is `POWERSHELL_TEST_BUDGET`, and it is deliberately loose.
+    /// It is not a latency assertion — what this test pins is the *content* of
+    /// the failure the launcher reports, and the bound exists only so a hang
+    /// cannot wedge the suite.
     #[cfg(windows)]
     #[tokio::test]
     async fn launch_reports_a_powershell_failure_without_starting_anything() {
-        const POWERSHELL_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
         let _guard = crate::test_env::lock_env().await;
         let missing = format!(
             "C:\\future-clitui-does-not-exist-{}.exe",
             std::process::id()
         );
         let result = tokio::time::timeout(
-            POWERSHELL_BUDGET,
+            POWERSHELL_TEST_BUDGET,
             launch_windows_detached(&missing, &["--flag".to_string()]),
         )
         .await
@@ -322,11 +335,13 @@ mod tests {
 
         // An empty argument list is rejected by Start-Process's own parameter
         // validation, which is also a non-zero exit rather than a silent no-op.
-        let result =
-            tokio::time::timeout(POWERSHELL_BUDGET, launch_windows_detached(&missing, &[]))
-                .await
-                .expect("PowerShell must answer within its budget")
-                .expect_err("an empty -ArgumentList cannot start anything either");
+        let result = tokio::time::timeout(
+            POWERSHELL_TEST_BUDGET,
+            launch_windows_detached(&missing, &[]),
+        )
+        .await
+        .expect("PowerShell must answer within its budget")
+        .expect_err("an empty -ArgumentList cannot start anything either");
         assert!(result.contains("exit code"), "{result}");
     }
 }

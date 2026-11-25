@@ -634,12 +634,6 @@ function PeerLabelDialog({
         <TextInput
           aria-label={t("nameLabel")}
           onChange={event => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void save();
-            }
-          }}
           placeholder={t("namePlaceholder")}
           value={name}
         />

@@ -38,7 +38,7 @@ import { unified } from "unified";
 import { localFilePath } from "./localPath";
 import { htmlBlockToNodes } from "./htmlBlocks";
 import { repairNestedDocumentFence } from "./fenceNesting";
-import { normalizeChoiceTagBlocks } from "./choiceTagBlocks";
+import { isChoiceFence, normalizeChoiceTagBlocks } from "./choiceTagBlocks";
 import { remarkLatexMath } from "./remarkLatexMath";
 import { remarkMathFence } from "./remarkMathFence";
 import { remarkCurrencyMath } from "./remarkCurrencyMath";
@@ -595,8 +595,6 @@ function parseDirectiveFields(lines: string[]) {
   return fields;
 }
 
-/** Fence language of a choice card; every other fence keeps its old meaning. */
-const CHOICE_FENCE = "futureos-choice";
 /** §3: an option id is ASCII `[a-z0-9-]`, at most 24 characters. */
 const CHOICE_OPTION_ID = /^[a-z0-9-]{1,24}$/;
 const CHOICE_MIN_OPTIONS = 2;
@@ -628,7 +626,7 @@ const CHOICE_MAX_OPTIONS = 6;
  * and what clients that do not know the card show anyway.
  */
 function parseChoiceCard(node: Code): ChoiceCardNode | null {
-  if (node.lang?.trim().toLowerCase() !== CHOICE_FENCE) return null;
+  if (!isChoiceFence(node.lang)) return null;
 
   const entries = parseDirectiveEntries(node.value.split("\n"));
   const rawOptions = entries

@@ -99,7 +99,6 @@ export function DesktopLabelDialog({ desktop, onClose }: {
             editable={!saving}
             maxLength={MAX_NAME_LENGTH}
             onChangeText={setName}
-            onSubmitEditing={() => void save()}
             placeholder={desktop.desktopId}
             placeholderTextColor={colors.inkMuted}
             returnKeyType="done"

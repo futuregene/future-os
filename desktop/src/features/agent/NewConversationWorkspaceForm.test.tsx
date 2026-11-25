@@ -94,10 +94,23 @@ it("reports every interaction to its owner", () => {
   expect(handlers.onDisplayNameChange).toHaveBeenCalledWith("renamed");
 });
 
-it("submits through the form rather than the button only", () => {
+it("cancels the field's Enter so the form cannot submit itself", () => {
+  // The field keeps its Enter: only the Open button submits. `preventDefault`
+  // on the keydown is what stops the browser's implicit form submission (jsdom
+  // performs none of its own, so the cancel is the observable here).
+  const handlers = render({ path: "/tmp/x" });
+  const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" });
+  act(() => {
+    nameInput().dispatchEvent(event);
+  });
+  expect(event.defaultPrevented).toBe(true);
+  expect(handlers.onSubmit).not.toHaveBeenCalled();
+});
+
+it("submits through the form's button rather than the form itself", () => {
   const handlers = render({ path: "/tmp/x" });
   act(() => {
-    container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    byText("Open").click();
   });
   expect(handlers.onSubmit).toHaveBeenCalledTimes(1);
   expect((handlers.onSubmit.mock.calls[0]![0] as FormEvent).type).toBe("submit");

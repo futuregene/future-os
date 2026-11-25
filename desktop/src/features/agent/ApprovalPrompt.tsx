@@ -175,7 +175,8 @@ export function ApprovalPrompt({
         // With ⇧ this is the wider answer: approve and stop asking here — the
         // button beside "allow once" (`allowChat` / `allowWorkspace`). Its two
         // shapes are kept apart there too: a rule this build can write outright
-        // is saved; one that needs a path opens the editor (which takes `↩`).
+        // is saved; one that needs a path opens the editor (whose own button
+        // saves — the field keeps its Enter for editing).
         if (event.shiftKey) {
           if (!saveSuggestion || malformedCapability)
             return;
@@ -244,12 +245,6 @@ export function ApprovalPrompt({
                 autoFocus
                 className="font-mono text-xs"
                 onChange={event => setPattern(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    void confirmRule();
-                  }
-                }}
                 value={pattern}
               />
               <div className="mt-2 flex items-center justify-end gap-2">

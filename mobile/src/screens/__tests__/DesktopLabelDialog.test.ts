@@ -121,12 +121,16 @@ test("the default mark is one of the picks, and it can replace another", async (
   expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop", { icon: PEER_ICONS[0]!.id });
 });
 
-// The keyboard's "done" key is the way out of a one-field dialog on a phone;
-// it saves exactly what the button does, and a dialog that only wired the
-// button would leave that key doing nothing.
-test("saving from the keyboard writes the same label as the button", async () => {
+// Only the save button writes. The keyboard's return key blurs the field and
+// nothing more: a name can be half-typed, and a dialog that saved on it stored
+// the fragment the reader was still working on.
+test("the keyboard's return key does not save", async () => {
   await act(async () => nameField().props.onChangeText("Bench"));
-  await act(async () => { await nameField().props.onSubmitEditing(); });
+  expect(nameField().props.onSubmitEditing).toBeUndefined();
+  expect(mockRemote.labelDesktop).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+
+  await act(async () => button("desktops.save").props.onPress());
   expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop", { name: "Bench" });
   expect(onClose).toHaveBeenCalled();
 });
