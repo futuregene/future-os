@@ -244,6 +244,7 @@
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
     "compacting": "Compacting context…",
+    "sendAfterCompaction": "Sending when compaction finishes…",
     "recommending": "Finding a skill…",
     "preparing": "Loading models…",
     "compactionNotNeeded": "There is no conversation context to compact.",
