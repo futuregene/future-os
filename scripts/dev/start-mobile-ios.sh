@@ -144,10 +144,6 @@ sim_running() {
   xcrun simctl list devices | grep -F "($DEVICE_UDID)" | grep -q "Booted"
 }
 
-sim_ready() {
-  xcrun simctl bootstatus "${DEVICE_NAME}" -b >/dev/null 2>&1
-}
-
 open_simulator_ui() {
   if [[ -d "$SIMULATOR_APP" ]]; then
     open "$SIMULATOR_APP"
@@ -178,37 +174,15 @@ if [[ -z "$DEVICE_UDID" ]]; then
   echo "Created simulator $DEVICE_NAME ($DEVICE_UDID)"
 fi
 
-if sim_running && sim_ready; then
-  echo "Simulator $DEVICE_NAME is already running and ready."
-else
-  if sim_running; then
-    echo "Simulator is online but not fully booted. Waiting..."
-  else
-    if [[ "$WARM_START" == "1" ]]; then
-      echo "WARM_START=1 — assuming simulator is already running. If not, drop WARM_START."
-    else
-      echo "Booting simulator $DEVICE_NAME..."
-      xcrun simctl boot "$DEVICE_UDID" 2>/dev/null || true
-    fi
-  fi
-
-  echo "Waiting for simulator to boot..."
-  for i in $(seq 1 60); do
-    sleep 5
-    if sim_ready; then
-      echo "Simulator ready."
-      break
-    fi
-    if [[ $((i % 6)) -eq 0 ]]; then
-      echo "  still booting... (${i}x5s)"
-    fi
-  done
-
-  if ! sim_ready; then
-    echo "Simulator did not finish booting in time."
+if ! sim_running; then
+  if [[ "$WARM_START" == "1" ]]; then
+    echo "WARM_START=1 requires $DEVICE_NAME ($DEVICE_UDID) to be running. Start it or unset WARM_START." >&2
     exit 1
   fi
+  echo "Booting simulator $DEVICE_NAME..."
+  xcrun simctl boot "$DEVICE_UDID" || sim_running
 fi
+xcrun simctl bootstatus "$DEVICE_UDID"
 
 # Device Hub replaces Simulator.app in Xcode 27. Open it even when the device
 # was already booted by an earlier failed or interrupted launch.
@@ -241,7 +215,7 @@ INSTALLED_PREBUILD_HASH="$(cat "$PREBUILD_STAMP" 2>/dev/null || true)"
 if [[ "$REBUILD_PREBUILD" == "1" ]] || [[ ! -d "$MOBILE_DIR/ios" ]] || \
   [[ "$PREBUILD_INPUT_HASH" != "$INSTALLED_PREBUILD_HASH" ]]; then
   echo "Running expo prebuild..."
-  (cd "$MOBILE_DIR" && npx expo prebuild --clean --platform ios)
+  (cd "$MOBILE_DIR" && npx expo prebuild --clean --platform ios --no-install)
   printf '%s\n' "$PREBUILD_INPUT_HASH" > "$PREBUILD_STAMP"
 fi
 
@@ -250,18 +224,26 @@ fi
 # again, even when the lockfile contents were unchanged.
 POD_LOCK="$MOBILE_DIR/ios/Podfile.lock"
 POD_STAMP="$MOBILE_DIR/ios/Pods/.futureos-dependencies.sha256"
-POD_INPUT_HASH="$({
-  shasum -a 256 "$MOBILE_DIR/package.json"
-  shasum -a 256 "$ROOT_DIR/package-lock.json"
-  shasum -a 256 "$MOBILE_DIR/ios/Podfile"
-  shasum -a 256 "$POD_LOCK"
-  checksum_apple_module_pod_inputs
-} | shasum -a 256 | awk '{print $1}')"
+checksum_pod_inputs() {
+  {
+    shasum -a 256 "$MOBILE_DIR/package.json" "$ROOT_DIR/package-lock.json" "$MOBILE_DIR/ios/Podfile"
+    if [[ -f "$POD_LOCK" ]]; then
+      shasum -a 256 "$POD_LOCK"
+    fi
+    checksum_apple_module_pod_inputs
+  } | shasum -a 256 | awk '{print $1}'
+}
+POD_INPUT_HASH="$(checksum_pod_inputs)"
 INSTALLED_POD_HASH="$(cat "$POD_STAMP" 2>/dev/null || true)"
-if [[ ! -f "$POD_LOCK" ]] || [[ ! -d "$MOBILE_DIR/ios/Pods" ]] || \
+if ! cmp -s "$POD_LOCK" "$MOBILE_DIR/ios/Pods/Manifest.lock" || \
   [[ "$POD_INPUT_HASH" != "$INSTALLED_POD_HASH" ]]; then
   echo "Synchronizing updated iOS native dependencies..."
   (cd "$MOBILE_DIR/ios" && pod install --no-repo-update)
+  cmp -s "$POD_LOCK" "$MOBILE_DIR/ios/Pods/Manifest.lock" || {
+    echo 'CocoaPods did not produce matching Podfile.lock and Pods/Manifest.lock.' >&2
+    exit 1
+  }
+  POD_INPUT_HASH="$(checksum_pod_inputs)"
   printf '%s\n' "$POD_INPUT_HASH" > "$POD_STAMP"
 else
   echo "iOS native dependencies unchanged; reusing Pods."

@@ -245,6 +245,7 @@ pub fn agent_message_to_entry(msg: &crate::types::AgentMessage) -> SessionEntry 
 
     let mut persisted_metadata = msg.metadata.clone().unwrap_or_default();
     persisted_metadata.remove(crate::types::AgentMessage::JOURNAL_ENTRY_ID_KEY);
+    persisted_metadata.remove(crate::types::AgentMessage::JOURNAL_BOUNDARY_ID_KEY);
 
     SessionEntry {
         id: msg
