@@ -296,9 +296,11 @@ mod tests {
         assert!(answer.text.contains("consensus"));
         assert_eq!(session.requests.len(), 2);
         assert!(session.requests[1].1);
-        assert!(session.requests[1].0.contains("quote_path"));
         assert!(session.requests[1].0.contains("short exact quote"));
-        assert!(!session.requests[1].0.contains("/response"));
+        assert!(session.requests[1]
+            .0
+            .contains("Use quote_path /response only if the entire visible response is relevant"));
+        assert!(!session.requests[1].0.contains("Organize existing sources"));
     }
     #[tokio::test]
     async fn stops_after_one_repair_and_retains_unvalidated_public_report() {
