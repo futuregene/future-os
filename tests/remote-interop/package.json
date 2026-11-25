@@ -14,13 +14,13 @@
   },
   "dependencies": {
     "@future-os/remote-client": "*",
-    "@nats-io/nats-core": "3.4.0"
+    "@nats-io/nats-core": "3.5.0"
   },
   "devDependencies": {
-    "@types/node": "26.6.5",
-    "@typescript-eslint/parser": "8.72.0",
-    "@typescript-eslint/eslint-plugin": "8.72.0",
-    "eslint": "10.13.0",
+    "@types/node": "26.6.7",
+    "@typescript-eslint/parser": "8.74.0",
+    "@typescript-eslint/eslint-plugin": "8.74.0",
+    "eslint": "10.15.0",
     "typescript": "6.0.3",
     "esbuild": "0.28.2",
     "sodium-javascript": "0.8.0"
