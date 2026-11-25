@@ -3459,7 +3459,11 @@ mod tests {
     /// The pinned launcher does not exist, so nothing is ever started: the
     /// PowerShell `Start-Process` fails on the missing file, and the launch is
     /// reported as an error. The wrapper is bounded because a launcher that never
-    /// answers would otherwise be the suite's problem, not this test's.
+    /// answers would otherwise be the suite's problem, not this test's; the
+    /// bound is `crate::browser::windows_process::POWERSHELL_TEST_BUDGET`, the
+    /// same hang guard the launcher's own tests use (a real cold
+    /// `powershell.exe` measured 201 s on a loaded Windows runner on 2026-11-25,
+    /// so it is not a latency assertion).
     ///
     /// WINDOWS-ONLY, because the premise does not hold on unix: there the spawn is
     /// detached and a missing launcher is reported as `starting` rather than as an
@@ -3475,11 +3479,11 @@ mod tests {
             "chrome".to_string(),
         )));
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            crate::browser::windows_process::POWERSHELL_TEST_BUDGET,
             browser_start(&args(&[("port", json!(free_port()))])),
         )
         .await
-        .expect("the launch must answer within 60s");
+        .expect("the launch must answer within its budget");
         *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
         let err = result.map(|_| ()).unwrap_err();
         assert!(!err.is_empty(), "the launch failure is reported");
@@ -3502,11 +3506,11 @@ mod tests {
             Some(Some(("where".to_string(), "chrome".to_string())));
         let port = free_port();
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            crate::browser::windows_process::POWERSHELL_TEST_BUDGET,
             browser_start(&args(&[("port", json!(port))])),
         )
         .await
-        .expect("the readiness window must close within 60s");
+        .expect("the readiness window must close within its budget");
         *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
         let result = result.expect("a detached launch is a success");
         let structured = result.structured_content.expect("structured content");

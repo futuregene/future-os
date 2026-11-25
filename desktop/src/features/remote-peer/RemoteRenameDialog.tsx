@@ -98,12 +98,6 @@ export function RemoteRenameDialog({
       <TextInput
         aria-label={t("renameTitle")}
         onChange={event => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            void submit();
-          }
-        }}
         value={value}
       />
       {/* The same action, wording and hint as this app's own rename dialog: the

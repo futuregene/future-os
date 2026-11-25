@@ -11,6 +11,10 @@ use std::sync::{
     Arc,
 };
 
+// A fusion step holds one of these in a task-local for the whole run, so a
+// couple of hundred bytes per run is cheaper than an indirection through every
+// construction and match site.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub(crate) enum ContextScope {
     Parent {
