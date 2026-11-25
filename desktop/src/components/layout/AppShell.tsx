@@ -2261,6 +2261,13 @@ function ReadyAppShell({
                               : section === "chat" && activeRemote
                                 ? (
                                     <RemoteConversationView
+                                      // One instance per remote conversation: switching
+                                      // conversations remounts, so a conversation's
+                                      // transcript, its viewport (where the reader had
+                                      // scrolled to) and its in-flight reads can never
+                                      // bleed into another. The hook resets on the same
+                                      // key for the frames that reuse this view in place.
+                                      key={`${activeRemote.desktopId}:${activeRemote.sessionId}`}
                                       approvals={remoteApprovals.approvals}
                                       approvalErrors={remoteApprovals.errors}
                                       approvalPending={remoteApprovals.pending}

@@ -24,7 +24,7 @@ function entry(id: string, role: "user" | "assistant", text: string): SessionEnt
   return { blocks: [{ kind: "text", text }], createdAtMs: 1, id, kind: "message", role } as unknown as SessionEntry;
 }
 
-async function mount(props: {
+interface ViewProps {
   hasMore?: boolean;
   /** The reply the host is writing, if the test is about streaming. */
   liveReplies?: RemoteLiveReply[];
@@ -34,41 +34,47 @@ async function mount(props: {
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   onLoadOlder?: () => void | Promise<unknown>;
   persisted?: string[];
-}) {
+}
+
+function viewElement(props: ViewProps, sessionId: string) {
+  return (
+    <RemoteConversationView
+      approvals={[]}
+      approvalErrors={{}}
+      approvalPending={null}
+      composer={<div />}
+      desktopId="desktop_a"
+      error={null}
+      hasMore={props.hasMore ?? false}
+      leftPanelExpanded
+      liveReplies={props.liveReplies ?? []}
+      loading={false}
+      loadingOlder={props.loadingOlder ?? false}
+      messages={props.messages}
+      onContinueRun={vi.fn()}
+      onDecideApproval={vi.fn()}
+      onFork={props.onFork ?? vi.fn()}
+      onLoadOlder={props.onLoadOlder ?? vi.fn()}
+      onOpenUsage={vi.fn()}
+      onRetry={vi.fn()}
+      onToggleLeftPanel={vi.fn()}
+      olderHistoryFailed={props.olderHistoryFailed ?? false}
+      peer={undefined}
+      persistedEntryIds={new Set(props.persisted ?? [])}
+      sessionId={sessionId}
+      streaming={false}
+      title="A conversation"
+      workspaceName={null}
+    />
+  );
+}
+
+async function mount(props: ViewProps) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(
-      <RemoteConversationView
-        approvals={[]}
-        approvalErrors={{}}
-        approvalPending={null}
-        composer={<div />}
-        desktopId="desktop_a"
-        error={null}
-        hasMore={props.hasMore ?? false}
-        leftPanelExpanded
-        liveReplies={props.liveReplies ?? []}
-        loading={false}
-        loadingOlder={props.loadingOlder ?? false}
-        messages={props.messages}
-        onContinueRun={vi.fn()}
-        onDecideApproval={vi.fn()}
-        onFork={props.onFork ?? vi.fn()}
-        onLoadOlder={props.onLoadOlder ?? vi.fn()}
-        onOpenUsage={vi.fn()}
-        onRetry={vi.fn()}
-        onToggleLeftPanel={vi.fn()}
-        olderHistoryFailed={props.olderHistoryFailed ?? false}
-        peer={undefined}
-        persistedEntryIds={new Set(props.persisted ?? [])}
-        sessionId="sess_1"
-        streaming={false}
-        title="A conversation"
-        workspaceName={null}
-      />,
-    );
+    root.render(viewElement(props, "sess_1"));
   });
   // The transcript viewport, addressed the way the app addresses it: the
   // `data-chat-scroll` hook is what the composer-inset and sticky-scroll code
@@ -78,7 +84,13 @@ async function mount(props: {
   const scroller = () => container.querySelector<HTMLElement>("[data-chat-scroll='true']")!;
   return {
     container,
+    open: async (next: ViewProps, sessionId: string) => {
+      await act(async () => {
+        root.render(viewElement(next, sessionId));
+      });
+    },
     fork: () => container.querySelector<HTMLButtonElement>("button[title='Fork']")!,
+    scroller,
     scroll: async (from: number, to: number) => {
       await act(async () => {
         const element = scroller();
@@ -216,5 +228,39 @@ it("reports a reply whose turn is not persisted on the host", async () => {
 
   await act(async () => view.fork().click());
   expect(onFork).toHaveBeenCalledWith("u1", false);
+  await view.unmount();
+});
+
+/**
+ * Another conversation opens on its newest message, not where the last one was
+ * left.
+ *
+ * This view is drawn for whichever remote conversation is open, and a frame that
+ * reuses the instance hands the same scroll container a different transcript.
+ * The previous conversation's "the reader scrolled up" state and its reading
+ * anchor are refs, so without a per-conversation reset the new transcript keeps
+ * the old pixel offset: a long conversation lands on a historical message, while
+ * a short one only hides it because the browser clamps the offset to the bottom.
+ * That is the shape of the report — "it opens somewhere in the middle, and only
+ * when the conversation is long".
+ */
+it("opens another conversation on its newest message, not where the last one was left", async () => {
+  const first = entriesToMessages([entry("u1", "user", "hello"), entry("a1", "assistant", "hi")]);
+  const second = entriesToMessages([
+    entry("u2", "user", "later"),
+    entry("a2", "assistant", "much later"),
+  ]);
+  const view = await mount({ messages: first });
+  const scroller = view.scroller();
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, get: () => 400 });
+  Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => 4_000 });
+
+  // The reader scrolled up in the first conversation to read its history.
+  await view.scroll(3_000, 2_800);
+  expect(scroller.scrollTop).toBe(2_800);
+
+  await view.open({ messages: second }, "sess_2");
+
+  expect(scroller.scrollTop).toBe(4_000);
   await view.unmount();
 });
