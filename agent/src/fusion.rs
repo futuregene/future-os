@@ -705,6 +705,9 @@ pub(crate) fn child_sessions() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// A model turn that cannot generate at least this much is not worth sending.
+const MIN_GENERATION_TOKENS: usize = 256;
+
 /// Guard every actual model turn, including tools and generated history.
 pub(crate) struct ContextProvider {
     pub provider: Arc<dyn crate::types::LLMProvider>,
@@ -761,6 +764,15 @@ impl crate::types::LLMProvider for ContextProvider {
         &self,
         mut request: crate::llm::schema::ModelRequest,
     ) -> Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>> {
+        // The journal keeps every turn's reasoning, and a thinking-format API
+        // only demands it back on a turn that called a tool. A report stage has
+        // no such round trip, so replaying its own earlier thinking buys
+        // nothing while being charged against the window twice: once when it
+        // was produced, again on every request that carries it. 2026-11-25 a
+        // moderator spent 130 KB of its output budget thinking, and the
+        // continuation and repair requests replayed that thinking until the
+        // window had no room left to generate an answer at all.
+        without_replayed_reasoning(&mut request);
         let text_bytes = request_context_bytes(&request)?;
         // Tool results and repair history can use more space than the initial
         // Host prompt. Keep available images in order within the actual turn.
@@ -798,10 +810,29 @@ impl crate::types::LLMProvider for ContextProvider {
         };
         let output = (self.settings.max_output_tokens.max(0) as usize)
             .min(remaining.saturating_sub(repair_reserve));
-        ensure!(
-            output >= 256,
-            "Fusion context has no generation space; request was not sent"
-        );
+        if output < MIN_GENERATION_TOKENS {
+            // Everything the window can hold is already history. Finish the
+            // reply instead of failing the step: the visible text produced so
+            // far is still a report the Host can validate, repair or degrade
+            // honestly, while a step that died here reported only an unknown
+            // failure with no attribution.
+            tracing::warn!(
+                step_bytes = bytes,
+                context_window = self.settings.context_window,
+                remaining,
+                report_revision = self.settings.report_revision,
+                "Fusion context has no generation space; finishing with the reply so far"
+            );
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let _ = tx
+                .send(crate::llm::schema::ModelStreamEvent::Finish {
+                    reason: crate::llm::schema::FinishReason::Stop,
+                    usage: None,
+                })
+                .await;
+            drop(tx);
+            return Ok(tokio_stream::wrappers::ReceiverStream::new(rx));
+        }
         future_fusion::guard_context(bytes, self.settings.context_window, output)?;
         if visible > 0 {
             let user = request
@@ -820,6 +851,31 @@ impl crate::types::LLMProvider for ContextProvider {
         self.provider
             .stream_model_with_output_limit(request, output.min(i32::MAX as usize) as i32)
             .await
+    }
+}
+
+/// Drop a turn's reasoning from the wire while leaving the journal untouched.
+/// A turn that called a tool keeps it: a thinking-format API refuses that round
+/// trip with HTTP 400 ("The `reasoning_content` in the thinking mode must be
+/// passed back to the API"). Every other turn's thinking is re-readable
+/// material the model already acted on, so it is history the window pays for
+/// twice.
+fn without_replayed_reasoning(request: &mut crate::llm::schema::ModelRequest) {
+    use crate::types::ContentBlock;
+    for message in &mut request.messages {
+        if message.role != "assistant" {
+            continue;
+        }
+        if message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall { .. }))
+        {
+            continue;
+        }
+        message
+            .content
+            .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
     }
 }
 
@@ -936,7 +992,7 @@ mod input_contract_tests {
     }
 
     #[tokio::test]
-    async fn oversized_actual_request_never_reaches_provider() {
+    async fn request_without_generation_space_finishes_without_calling_provider() {
         use crate::types::LLMProvider;
         struct NeverCalled;
         #[async_trait::async_trait]
@@ -971,7 +1027,187 @@ mod input_contract_tests {
             messages: vec![],
             tools: vec![],
         };
-        assert!(guarded.stream_model(request).await.is_err());
+        use tokio_stream::StreamExt;
+        let mut stream = guarded.stream_model(request).await.unwrap();
+        assert!(
+            matches!(
+                stream.next().await,
+                Some(crate::llm::schema::ModelStreamEvent::Finish {
+                    reason: crate::llm::schema::FinishReason::Stop,
+                    ..
+                })
+            ),
+            "a full window must finish the reply, not fail the step"
+        );
+        assert!(stream.next().await.is_none());
+    }
+
+    /// Records what the wrapped provider is actually asked to send.
+    struct Wire(std::sync::Mutex<Vec<(crate::llm::schema::ModelRequest, i32)>>);
+
+    impl Default for Wire {
+        fn default() -> Self {
+            Self(std::sync::Mutex::new(vec![]))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::types::LLMProvider for Wire {
+        async fn stream_model(
+            &self,
+            _: crate::llm::schema::ModelRequest,
+        ) -> anyhow::Result<
+            tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+        > {
+            panic!("capacity override was not applied")
+        }
+        async fn stream_model_with_output_limit(
+            &self,
+            request: crate::llm::schema::ModelRequest,
+            limit: i32,
+        ) -> anyhow::Result<
+            tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>,
+        > {
+            self.0.lock().unwrap().push((request, limit));
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            drop(tx);
+            Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+        }
+    }
+
+    /// The 2026-11-25 moderator: 85 KB of analyses, a 150 KB thinking block on
+    /// an unfinished report, then a 30 KB repair instruction. Replaying that
+    /// thinking left no generation space, so the step died with no attribution.
+    #[tokio::test]
+    async fn a_report_stage_does_not_replay_its_own_reasoning() {
+        use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+        let wire = std::sync::Arc::new(Wire::default());
+        let guarded = super::ContextProvider {
+            provider: wire.clone(),
+            user_images: super::UserImageContext::default(),
+            settings: future_fusion::StepSettings {
+                thinking_level: "high".into(),
+                max_output_tokens: 32_768,
+                context_window: 262_144,
+                max_public_bytes: 118_441,
+                report_revision: 1,
+                user_image_limit: 0,
+                timeout_ms: 300_000,
+                idle_timeout_ms: None,
+                retry_reason: None,
+            },
+        };
+        let request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "Format the decision input as JSON.".into(),
+            messages: vec![
+                AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("a".repeat(85_000))],
+                    ..Default::default()
+                },
+                AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        ContentBlock::Reasoning {
+                            text: "t".repeat(150_000),
+                            provider_metadata: Default::default(),
+                        },
+                        ContentBlock::text("{\"consensus\":\"partial".to_owned()),
+                    ],
+                    ..Default::default()
+                },
+                AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("r".repeat(30_000))],
+                    ..Default::default()
+                },
+            ],
+            tools: vec![],
+        };
+        guarded.stream_model(request.clone()).await.unwrap();
+        {
+            let sent = wire.0.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            let (request, limit) = &sent[0];
+            assert_eq!(*limit, 32_768, "the window must serve the full budget");
+            let assistant = &request.messages[1];
+            assert!(
+                !assistant
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Reasoning { .. })),
+                "a report stage's own thinking must not be replayed"
+            );
+            assert!(assistant.text().starts_with("{\"consensus\""));
+        }
+        // Only the wire is trimmed; the journal entry keeps its reasoning.
+        assert!(request.messages[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Reasoning { .. })));
+    }
+
+    /// A thinking-format API refuses a tool-call round trip without the
+    /// assistant turn's reasoning (HTTP 400), so that shape keeps it.
+    #[tokio::test]
+    async fn tool_call_turns_keep_their_reasoning_on_the_wire() {
+        use crate::types::{AgentMessage, ContentBlock, LLMProvider};
+        let wire = std::sync::Arc::new(Wire::default());
+        let guarded = super::ContextProvider {
+            provider: wire.clone(),
+            user_images: super::UserImageContext::default(),
+            settings: future_fusion::StepSettings {
+                thinking_level: "high".into(),
+                max_output_tokens: 32_768,
+                context_window: 262_144,
+                max_public_bytes: 118_441,
+                report_revision: 0,
+                user_image_limit: 0,
+                timeout_ms: 300_000,
+                idle_timeout_ms: None,
+                retry_reason: None,
+            },
+        };
+        let request = crate::llm::schema::ModelRequest {
+            model: "test".into(),
+            system_prompt: "Investigate.".into(),
+            messages: vec![
+                AgentMessage {
+                    role: "user".into(),
+                    content: vec![ContentBlock::text("Read the note.")],
+                    ..Default::default()
+                },
+                AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        ContentBlock::Reasoning {
+                            text: "the note is next".to_owned(),
+                            provider_metadata: Default::default(),
+                        },
+                        ContentBlock::ToolCall {
+                            id: "read-1".into(),
+                            name: "read".into(),
+                            args: serde_json::json!({"path": "note.md"}),
+                            provider_metadata: Default::default(),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                AgentMessage {
+                    role: "tool".into(),
+                    content: vec![ContentBlock::tool_result("read-1", "note body", false)],
+                    ..Default::default()
+                },
+            ],
+            tools: vec![],
+        };
+        guarded.stream_model(request).await.unwrap();
+        let sent = wire.0.lock().unwrap();
+        assert!(sent[0].0.messages[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Reasoning { .. })));
     }
 
     #[tokio::test]

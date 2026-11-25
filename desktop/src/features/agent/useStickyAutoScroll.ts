@@ -11,6 +11,22 @@ interface UseStickyAutoScrollInput {
   scrollRef: RefObject<HTMLElement | null>;
   /** Changing this (e.g. the message list) re-runs the follow effect. */
   contentKey: unknown;
+  /**
+   * Which conversation the viewport state below belongs to.
+   *
+   * A caller can swap the transcript under one scroll container without
+   * remounting the view — the remote view does exactly that when the reader
+   * opens another conversation — and this hook's refs outlive that swap. The
+   * previous conversation's "the reader scrolled up" state and its reading
+   * anchor then describe messages the new transcript does not have, and
+   * `settleViewport` keeps the current position rather than following, so a long
+   * conversation opens on whatever pixel offset the last one was left at: a
+   * historical message, seemingly at random.
+   *
+   * Changing this drops both and follows the newest message again. A caller that
+   * already remounts per conversation may leave it out.
+   */
+  resetKey?: unknown;
   /** False while the real message content is temporarily not mounted. */
   followEnabled?: boolean;
   /** Consume a WebKit momentum scroll that must restore the reading anchor. */
@@ -30,6 +46,7 @@ interface UseStickyAutoScrollInput {
 export function useStickyAutoScroll({
   scrollRef,
   contentKey,
+  resetKey,
   followEnabled = true,
   shouldRestoreReadingAnchor,
   onScroll,
@@ -61,6 +78,25 @@ export function useStickyAutoScroll({
     setShowJumpToLatest(false);
     scrollContainer.scrollTop = scrollContainer.scrollHeight;
   }, [scrollRef]);
+
+  // A conversation's viewport belongs to that conversation: a swap of the
+  // transcript under this container (see `resetKey`) must not inherit the last
+  // one's stickiness or reading anchor. Runs before the follow effect in the same
+  // commit, so a conversation opened this way settles on its own newest message.
+  const resetKeyRef = useRef(resetKey);
+  useLayoutEffect(() => {
+    if (Object.is(resetKeyRef.current, resetKey))
+      return;
+    resetKeyRef.current = resetKey;
+    stickToBottomRef.current = true;
+    anchorRef.current = null;
+    setShowJumpToLatest(false);
+    const container = scrollRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+      writtenTopRef.current = container.scrollTop;
+    }
+  }, [resetKey, scrollRef]);
 
   const settleViewport = useCallback(() => {
     if (!followEnabled)
