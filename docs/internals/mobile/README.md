@@ -183,6 +183,15 @@ development and distribution maintenance.
   message's text, which is the one part that was fine; and the machine that
   refused is another computer whose log the phone cannot read, so the wording
   is also the only diagnosis a report of it can carry.
+- A document picked through the system file picker is copied into the app's
+  cache before the message carries it, exactly like a converted image. The
+  picker answers with the provider's URI (a `content://` one on Android), and a
+  provider may serve only a stream: no size, no random access — where the upload
+  reads one chunk at a time through a seekable handle and sees nothing left to
+  send. Reading the whole document is the fallback for a copy that comes back
+  empty, and a document that cannot be read at all is refused while the picker
+  is still open (the waiting message's "+" cancels before it re-sends, so a file
+  that failed later would cost the message as well).
 - System notification permission is requested after pairing connects.
   Notifications fire when the current desktop's task completes or fails —
   including the currently open session; manual stop does not send a completion
