@@ -319,7 +319,7 @@ No missing exit code is replaced with zero; stdout markers cannot replace
 process status. Bare grep/test-style exit 1 keeps the existing normal-query
 semantics, while its actual code remains visible.
 
-Approval review and platform restrictions remain unchanged: Jev's three numeric
+Approval review and platform restrictions remain unchanged: the approval model's three numeric
 Choice questions, matrix, confidence thresholds, four sourced evidence classes,
 investigation budgets, cancellation, context validity and Linux helper checks
 still apply. New approval covers the actual operation prepared by the model. Approval permits execution; it does not establish safe replay. The model must inspect partial effects and submit only remaining work. Network behavior is unchanged.
@@ -345,7 +345,7 @@ Communication` into Markdown templates under `agent/src/prompt/`. Per-tool
 rules are appended only to execution; additional caller guidelines follow the
 three behavior sections. Project context and append overrides keep their
 later position, and a custom prompt still replaces the default identity and
-behavior sections. Jev's review questions remain a separate prompt.
+behavior sections. The approval model's review questions remain a separate prompt.
 
 The default identity describes a task assistant in FutureOS rather than a
 coding-only role. Communication leads with the result, adapts depth to the

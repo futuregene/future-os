@@ -247,7 +247,7 @@ the evidence), `module-tauri-terminal.md:696` (a `select!`-bias argument, i.e. c
 3. `approval.rs` 220–273 (Windows capability approval): same shape — a provisioned Windows
    sandbox host. **SURVIVED** on the category; I did not try to build the host.
 4. `session_title.rs` 521–525 ("needs a real LLM to answer with a title") and
-   `commands/providers.rs` 559–561 ("a signed-in, in-budget Jev service call"):
+   `commands/providers.rs` 559–561 ("a signed-in, in-budget decider service call"):
    **not falsified, but the reason is thinner than it looks.** Both are HTTP clients against a
    configured endpoint; `skill_reco`'s own new split (`attempt_call(client, endpoint, …)`)
    exists precisely so a *local socket* can serve those outcomes, and the module's §3 shows

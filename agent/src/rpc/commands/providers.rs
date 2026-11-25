@@ -696,9 +696,9 @@ pub(crate) fn cmd_refresh_skills(state: &AppState, id: &str) -> String {
 }
 
 /// `suggest_skill`: recommend at most one UNINSTALLED skill for the user's
-/// message via Jev. The caller decides when to invoke (which turns, length
+/// message via the decider route. The caller decides when to invoke (which turns, length
 /// bounds, login/balance, daily budget) and supplies the candidate set
-/// (catalog − installed); this handler only performs the Jev call and the
+/// (catalog − installed); this handler only performs the decider call and the
 /// refusal gate. `skill` is null on refusal, timeout, error, or when the
 /// account is not signed in — recommendation is best-effort, so every failure
 /// collapses to "no recommendation" and the client submits normally.

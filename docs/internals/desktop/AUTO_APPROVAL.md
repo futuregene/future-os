@@ -106,7 +106,7 @@ calling the provider, retaining size/source audit metadata. The three Choice que
 
 Input selection targets 6,000 estimated state tokens, with hard caps of 8,000 for state,
 4,000 for all questions and 12,000 for the whole serialized request. It also checks 30,000
-for state plus the longest question and 62,000 for state plus all questions, leaving headroom below the [official Jev limits](https://docs.typesafe.ai/models). With no Jev
+for state plus the longest question and 62,000 for state plus all questions, leaving headroom below the [upstream System One limits](https://docs.typesafe.ai/models). With no upstream
 tokenizer, the conservative estimator charges each serialized UTF-8 byte as one token;
 these are estimates, not actual tokenizer counts or guarantees about gateway-added text.
 Framing, escaping and source metadata count toward the budget. The in-memory history and

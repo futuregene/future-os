@@ -184,7 +184,8 @@ export class Suggester {
       const listed = (models || []).map((m) => m?.id || m?.name || m).filter(Boolean);
       this.mode = "gateway";
       // `/v1/models` validates the credential but only lists the gateway's chat
-      // models — `jev` is reachable on `/v1/systemone` and does not appear here,
+      // models — `decider` (and the `jev` baseline) are reachable on
+      // `/v1/systemone` and do not appear here,
       // so the note must not read as "these are the models you can ask".
       this.note =
         `账号凭据有效（网关列出 ${listed.length} 个对话模型）；推荐使用 ${this.client.model}` +

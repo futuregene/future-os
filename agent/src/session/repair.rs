@@ -227,7 +227,13 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
                         name: tc.function.name.clone(),
                         tool_args: String::new(),
                         thinking: String::new(),
-                        meta: None,
+                        // The invented ID above never reaches the journal, so it
+                        // cannot be a checkpoint boundary. The range this
+                        // message belongs to is the assistant entry that issued
+                        // the call, which recovery keeps it adjacent to.
+                        meta: Some(serde_json::json!({
+                            crate::types::AgentMessage::JOURNAL_BOUNDARY_ID_KEY: entry.id.clone()
+                        })),
                     }
                 })
                 .collect();
@@ -267,6 +273,48 @@ mod tests {
     #[test]
     fn repair_dangling_tool_calls_empty_entries_is_noop() {
         assert!(!repair_dangling_tool_calls(&mut Vec::new()));
+    }
+
+    /// The placeholder exists only in memory and its ID is invented, so the
+    /// compactor must not treat that ID as a journal range boundary. It names
+    /// the entry that issued the call instead, which is also what the projection
+    /// hands to compaction.
+    #[test]
+    fn a_recovered_placeholder_names_the_entry_that_issued_its_call() {
+        use crate::types::{ToolCall, ToolCallFn};
+        let mut assistant = SessionEntry::new_assistant(serde_json::json!("reading"), Vec::new());
+        assistant.id = "assistant-1".into();
+        assistant.tool_calls = vec![ToolCall {
+            id: "call-1".into(),
+            call_type: "function".into(),
+            function: ToolCallFn {
+                name: "read".into(),
+                arguments: serde_json::json!({}),
+            },
+        }];
+        let mut entries = vec![assistant];
+        assert!(repair_dangling_tool_calls(&mut entries));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].id, "missing-tool:assistant-1:call-1");
+        assert_eq!(
+            entries[1]
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get(crate::types::AgentMessage::JOURNAL_BOUNDARY_ID_KEY))
+                .and_then(serde_json::Value::as_str),
+            Some("assistant-1")
+        );
+        let messages = crate::session::entries_to_agent_messages(&entries, false);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[1].journal_entry_id(),
+            Some("missing-tool:assistant-1:call-1")
+        );
+        assert_eq!(
+            messages[1].journal_boundary_entry_id(),
+            Some("assistant-1"),
+            "compaction boundaries must remain journal identities"
+        );
     }
 }
 
