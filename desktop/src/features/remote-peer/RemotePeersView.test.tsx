@@ -973,14 +973,13 @@ it("reports a reconnect-all the shell could not carry out", async () => {
 });
 
 /**
- * Enter in the name box is the dialog's own submit.
+ * Enter in the name box is editing, not the dialog's answer.
  *
- * The keyboard is where the reader already is — they opened this to fix a name
- * and the box has the caret — so the last gesture must not be a trip to the
- * mouse. It goes through the same `save` the button does, which is what keeps
- * "Enter" and "Save" from being two different writes.
+ * Only the Save button writes: the caret is in a field the reader may still be
+ * half-way through, and a keystroke there must not commit a fragment as the
+ * machine's name.
  */
-it("saves the label from the keyboard", async () => {
+it("leaves Enter in the name box inert and saves from the button", async () => {
   const view = await mount();
   await act(async () => view.labelButton()!.click());
 
@@ -995,6 +994,11 @@ it("saves the label from the keyboard", async () => {
   });
   await view.settle();
 
+  expect(setRemotePeerLabel).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
+
+  await act(async () => view.dialogButton("Save")!.click());
+  await view.settle();
   expect(setRemotePeerLabel).toHaveBeenCalledWith("desktop_a", { name: "Studio mini" });
   expect(view.container.querySelector("[role='dialog']")).toBeNull();
   await view.unmount();

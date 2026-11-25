@@ -97,7 +97,10 @@ describe("rename dialog", () => {
     });
   }
 
-  it("submits on Enter and reports every keystroke", () => {
+  it("keeps Enter in the field and saves only through the button", () => {
+    // Only the footer's save button writes. A keystroke in the name field is
+    // editing: the reader may still be half-way through a name when the key
+    // lands, and committing on it saved a fragment.
     const onChange = vi.fn();
     const onConfirm = vi.fn();
     const view = mount(createElement(Harness, { onChange, onConfirm }));
@@ -109,11 +112,14 @@ describe("rename dialog", () => {
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    act(() => byText(view.container, "Save")!.click());
     expect(onConfirm).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 
-  it("ignores non-Enter keys", () => {
+  it("ignores non-Enter keys too", () => {
     const onConfirm = vi.fn();
     const view = mount(createElement(Harness, { onConfirm }));
     act(() => {

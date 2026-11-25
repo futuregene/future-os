@@ -23,8 +23,12 @@ interface RenameDialogProps {
 
 /**
  * Rename dialog shared by the thread and workspace flows: a single labelled text
- * input that submits on Enter, with a cancel / save footer and inline error. The
- * caller owns the dialog state and wires `onChange` (clearing its own error).
+ * input, with a cancel / save footer and inline error. The caller owns the dialog
+ * state and wires `onChange` (clearing its own error).
+ *
+ * Only the footer's save button writes: a text field this dialog does not own
+ * must not commit on a keystroke, and Enter inside it belongs to the reader's
+ * typing, not to the dialog.
  */
 export function RenameDialog({
   open,
@@ -68,12 +72,6 @@ export function RenameDialog({
         disabled={submitting || generating}
         id={inputId}
         onChange={event => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            onConfirm();
-          }
-        }}
         value={value}
       />
       {onGenerate
