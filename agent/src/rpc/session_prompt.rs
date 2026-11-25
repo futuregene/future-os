@@ -977,6 +977,17 @@ impl ServerSession {
             .model_registry
             .read()
             .request_model_accepts_images(&run_model);
+        let preserve_user_images = fusion_enabled && !fusion_inner;
+        let user_images = std::cell::RefCell::new(if preserve_user_images {
+            future_fusion::UserImages::from_candidates(images, |image| {
+                image
+                    .data
+                    .as_deref()
+                    .and_then(crate::utils::normalize_inline_model_image)
+            })
+        } else {
+            future_fusion::UserImages::default()
+        });
         // Images are read + (down)encoded to base64 here, on the agent, from the
         // local path the GUI sent — the base64 never crosses the wire.
         let mut user_message = Some(build_user_message_with_model_context(
@@ -985,8 +996,27 @@ impl ServerSession {
             images,
             attachments,
             model_supports_images,
-            &crate::utils::image_data_url_for_model,
+            &|path| {
+                let image = crate::utils::image_data_url_for_model(path);
+                if preserve_user_images {
+                    // Freeze the encoding used by the parent, even if the
+                    // original file is replaced before Fusion is invoked.
+                    user_images.borrow_mut().add_candidate(|| image.as_deref());
+                }
+                image
+            },
         ));
+        let mut user_images = user_images.into_inner();
+        if preserve_user_images && !model_supports_images {
+            // The panel may include vision models even if the parent is text-only.
+            for attachment in attachments
+                .iter()
+                .filter(|attachment| attachment.kind == "image")
+            {
+                user_images
+                    .add_candidate(|| crate::utils::image_data_url_for_model(&attachment.path));
+            }
+        }
 
         // NOTE: No content-based dedup here. Idempotency for transport-level
         // retries is enforced atomically by SessionRuntime::begin.
@@ -1255,6 +1285,16 @@ impl ServerSession {
             } else {
                 Vec::new()
             };
+            let user_images = if execution.include_user_images {
+                let limit = if model_supports_images {
+                    execution.settings.user_image_limit
+                } else {
+                    0
+                };
+                crate::fusion::UserImageContext::for_role(&snapshot, limit)?
+            } else {
+                crate::fusion::UserImageContext::default()
+            };
             run_loop.fusion_context = Some(crate::fusion::ContextScope::Inner(Arc::new(snapshot)));
             // Phase deadline owns multi-turn work, not report size.
             run_loop.config.max_turns = 0;
@@ -1272,6 +1312,7 @@ impl ServerSession {
             run_loop.provider = Arc::new(crate::fusion::ContextProvider {
                 provider,
                 settings: execution.settings,
+                user_images,
             });
             run_loop.parallel_tools = false;
         } else if fusion_enabled {
@@ -1303,6 +1344,7 @@ impl ServerSession {
                         .unwrap_or(prompt.message)
                         .to_owned(),
                 ),
+                user_images: Arc::new(user_images),
                 workspace: std::path::PathBuf::from(&session_cwd),
                 store: future_fusion::Store::existing(&crate::utils::future_home())?,
                 sandbox: sandbox.clone(),

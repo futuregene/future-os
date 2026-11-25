@@ -128,6 +128,8 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
     }
 }
 
+const MAX_IMAGE_SOURCE_BYTES: usize = 25 * 1024 * 1024;
+
 /// Read a user-attached image and return a `data:<mime>;base64,…` URL for a
 /// vision model's image_url block. Oversized images are downscaled so one
 /// attachment can't blow up the model request (mirrors opencode's normalize):
@@ -138,12 +140,34 @@ pub fn detect_image_mime_type(path: &Path) -> Option<String> {
 /// caller then skips the image (a path reference is useless: it's unreadable or
 /// too large either way).
 pub fn image_data_url_for_model(path: &str) -> Option<String> {
+    if std::fs::metadata(path).ok()?.len() > MAX_IMAGE_SOURCE_BYTES as u64 {
+        return None;
+    }
+    model_image_data_url(&std::fs::read(path).ok()?)
+}
+
+/// Accept only embedded images. Remote URLs may change after the parent turn.
+pub(crate) fn normalize_inline_model_image(url: &str) -> Option<String> {
+    use base64::Engine as _;
+    let (header, data) = url.split_once(',')?;
+    if !header.starts_with("data:image/")
+        || !header.ends_with(";base64")
+        || data.len() > MAX_IMAGE_SOURCE_BYTES.div_ceil(3) * 4
+    {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    model_image_data_url(&bytes)
+}
+
+fn model_image_data_url(bytes: &[u8]) -> Option<String> {
     use base64::Engine as _;
     use sha2::Digest as _;
 
     const MAX_DIM: u32 = 2000;
     const MAX_BASE64_BYTES: usize = 5 * 1024 * 1024;
-    const MAX_SOURCE_BYTES: u64 = 25 * 1024 * 1024;
 
     let data_url = |mime: &str, bytes: &[u8]| {
         format!(
@@ -154,17 +178,13 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Projected base64 length is ~4/3 of the raw byte count.
     let fits_base64 = |len: usize| len.div_ceil(3) * 4 <= MAX_BASE64_BYTES;
 
-    if std::fs::metadata(path).ok()?.len() > MAX_SOURCE_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.len() as u64 > MAX_SOURCE_BYTES {
+    if bytes.len() > MAX_IMAGE_SOURCE_BYTES {
         return None;
     }
     // The URL cache avoids repeated full decode + base64 work, but correctness
     // must not depend on filesystem timestamp granularity. Hashing the bytes we
     // actually read also closes the metadata/read replacement race.
-    let key = <[u8; 32]>::from(sha2::Sha256::digest(&bytes));
+    let key = <[u8; 32]>::from(sha2::Sha256::digest(bytes));
     if let Some(url) = cached_image_url(&key) {
         return Some(url);
     }
@@ -175,7 +195,7 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Cap the decoder's allocation so a decompression bomb (a tiny file that
     // decodes to a huge bitmap) can't OOM the agent. 512MB comfortably fits any
     // legitimate photo/screenshot while rejecting absurd dimensions.
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(&bytes))
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let mut limits = image::Limits::default();
@@ -188,7 +208,7 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
     // Small enough already: send the original bytes, keeping the source format
     // (e.g. PNG transparency) instead of forcing a JPEG re-encode.
     if width <= MAX_DIM && height <= MAX_DIM && fits_base64(bytes.len()) {
-        let url = data_url(format.to_mime_type(), &bytes);
+        let url = data_url(format.to_mime_type(), bytes);
         remember_image_url(key, &url);
         return Some(url);
     }

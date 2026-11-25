@@ -5,7 +5,33 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. The supplied_evidence status describes only the optional evidence array; data may already be present in request. Background, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
+pub(super) const POLICY: &str = "Source manifest is backend-generated availability metadata, not an additional user requirement. request identifies the preserved request (or the consultation question when unavailable); evidence:N identifies a zero-based supplied evidence item. The supplied_evidence status describes only the optional evidence array; data may already be present in request. The history_summary, prior assistant statements and participant reports are attributed context, not source-verified observations. File metadata means captured, not read; use the authorized snapshot tools before citing file contents. not_supplied and excluded content do not mean an empty dataset or a query with no matches. Do not apply a business empty-result default to unavailable input. If the task depends on missing material, identify that gap and preserve useful conditional results. Tasks that do not need external evidence may proceed normally. Source validation checks location, version and quotation only: it does not establish truth, independence, exhaustive coverage or entailment. A verified_fact remains a participant's source-checked claim; evaluate its support and counterexamples before adopting it.";
+
+pub(super) const COVERAGE_CHECK: &str = "Check the input that could overturn the proposed result. If the result filters or excludes supplied items, check which potentially qualifying inputs were omitted. Before applying an unknown-value default, check whether other supplied facts determine the missing condition, when the user's rule permits that inference. If an inferred rule drives the result, apply it to a supplied case that distinguishes it from plausible alternatives. A conflicting example defeats the rule as stated unless a narrower rule or an exception is supported by the supplied material. Report the decisive check and its effect; shared agreement does not resolve a missed input or a contradicted rule.";
+
+pub(super) const REPRODUCIBLE_CHECK: &str = "When the answer depends on a computation, state or scope, reconstruct the relevant inputs and reproduce the decisive step before choosing. Apply state changes in order and verify the affected parts of the resulting state. For a count or a claim over a set, specify what is counted or quantified and show why the check covers it, including any equivalence or limiting conditions. Report the smallest evidence or calculation that someone else can check. Refuting another answer or verifying a prerequisite leaves the proposed result to be checked. If a check cannot be completed, identify the gap and keep the affected claim provisional.";
+
+pub(super) const DECISIVE_COMPARISON: &str = "Compare the strongest viable alternatives under the same criterion, using the supplied details that distinguish them. Check disputed details against the original material when accessible, including native attachments. With one advisor, test their recommendation against a plausible alternative when it leaves a consequential detail unexplained. Show how an intermediate result or proxy establishes the requested quantity and scope. For a requested sequence, check the decisive intermediate steps under the supplied constraints even when competing paths reach the same endpoint. If only part of the answer is established, state what premise would decide each unresolved part and carry that dependency into the delivered answer.";
+
+/// Project the durable input into the roles visible to the panel. In a closed
+/// task the preserved request already supplies the entire discussion question.
+pub(super) fn prompt_input(input: &ConsultationInput) -> Value {
+    let mut discussion_task = json!({
+        "scope": if input.answer_only { "full_user_request" } else { "focused_task" },
+        "goal": input.goal,
+        "constraints": input.constraints,
+    });
+    if !input.answer_only {
+        discussion_task["question"] = json!(input.question);
+    }
+    json!({
+        "parent_request": input.parent_request,
+        "discussion_task": discussion_task,
+        "history_summary": input.background,
+        "evidence": input.evidence,
+        "read_scope": input.read_scope,
+    })
+}
 
 pub(super) fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
@@ -57,10 +83,23 @@ impl<'a> Sources<'a> {
             }),
             None => json!({"availability":"not_loaded","content_delivery":"unavailable"}),
         };
-        json!({"version":1,"inline_sources":inline,
+        let mut manifest = json!({"version":1,"inline_sources":inline,
             "supplied_evidence":if self.input.evidence.iter().any(|s| !s.trim().is_empty()) {"provided"} else {"not_supplied"},
             "file_scope":if self.input.read_scope.is_empty() {"not_requested"} else {"requested"},
-            "snapshot":snapshot})
+            "snapshot":snapshot});
+        if let Some(snapshot) = self.snapshot {
+            let captured = snapshot.user_images.len();
+            let unavailable = snapshot.unavailable_user_images;
+            if captured > 0 || unavailable > 0 {
+                manifest["user_images"] = json!({
+                    "captured": captured,
+                    "unavailable": unavailable,
+                    "content_delivery": "native attachments for roles that support images; a count alone does not expose image content",
+                    "use": "Use visible details as visual observations and separate them from inference. Do not claim to have seen missing images or treat another role's description as independently verified. If an unseen detail changes the answer, identify the gap. Images are outside the text-quotation citation protocol."
+                });
+            }
+        }
+        manifest
     }
 
     pub fn inline_version(&self, id: &str) -> Option<String> {
@@ -187,6 +226,26 @@ mod tests {
             .unwrap()
     }
     #[test]
+    fn panel_prompt_keeps_the_focused_task_separate_from_the_user_request() {
+        let mut input = input();
+        let focused = prompt_input(&input);
+        assert_eq!(focused["parent_request"], "Use the records, if supplied.");
+        assert_eq!(focused["discussion_task"]["scope"], "focused_task");
+        assert_eq!(
+            focused["discussion_task"]["question"],
+            "Summarize the supplied records"
+        );
+        assert_eq!(focused["history_summary"], input.background);
+
+        input.answer_only = true;
+        input.question = input.parent_request.clone().unwrap();
+        let closed = prompt_input(&input);
+        assert_eq!(closed["parent_request"], focused["parent_request"]);
+        assert_eq!(closed["discussion_task"]["scope"], "full_user_request");
+        assert!(closed["discussion_task"].get("question").is_none());
+    }
+
+    #[test]
     fn inline_references_bind_identity_version_and_original_text() {
         let input = input();
         let sources = Sources::new(&input, None);
@@ -214,6 +273,7 @@ mod tests {
         assert_eq!(manifest["inline_sources"][0]["availability"], "provided");
         assert_eq!(manifest["file_scope"], "not_requested");
         assert_eq!(manifest["snapshot"]["availability"], "not_loaded");
+        assert!(manifest.get("user_images").is_none());
         // Missing external evidence is not a blanket rejection of a valid task.
         input.validate().unwrap();
     }
@@ -241,6 +301,33 @@ mod tests {
             "captured_no_text_files"
         );
         assert!(manifest.get("query_result").is_none());
+    }
+
+    #[test]
+    fn image_receipts_publish_availability_without_payload_or_path() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let image = "data:image/png;base64,AQID";
+        let user_images =
+            future_fusion::UserImages::from_candidates([Some(image), None], |value| {
+                value.map(str::to_owned)
+            });
+        let snapshot = Snapshot::capture_with_images(
+            &workspace,
+            &root.path().join("snapshot"),
+            &[],
+            &user_images,
+            &AtomicBool::new(false),
+            |_| true,
+        )
+        .unwrap();
+        let input = input();
+        let manifest = Sources::new(&input, Some(&snapshot)).manifest();
+        assert_eq!(manifest["user_images"]["captured"], 1);
+        assert_eq!(manifest["user_images"]["unavailable"], 1);
+        assert!(!manifest.to_string().contains(image));
+        assert!(!manifest.to_string().contains(&snapshot.root));
     }
 
     #[test]

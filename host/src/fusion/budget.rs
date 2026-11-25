@@ -1,12 +1,33 @@
 //! Conservative admission using UTF-8 bytes (not chars/4 token estimates).
 use anyhow::{ensure, Context, Result};
-use future_fusion::{Configuration, StepSettings};
+use future_fusion::{Configuration, StepSettings, USER_IMAGE_CONTEXT_TOKENS};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const MIN_REPORT_BYTES: usize = 1024;
+const MIN_GENERATION_TOKENS: usize = 256;
+
+#[derive(Clone, Copy)]
+struct ModelCapacity {
+    window: usize,
+    output: usize,
+    image_limit: usize,
+}
+
+impl ModelCapacity {
+    fn report_room(self, base: usize) -> usize {
+        self.window.saturating_sub(
+            self.output
+                .min(self.window / 4)
+                .saturating_add(base)
+                .saturating_add(self.image_limit.saturating_mul(USER_IMAGE_CONTEXT_TOKENS)),
+        )
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Budget {
-    models: BTreeMap<String, (usize, usize)>,
+    models: BTreeMap<String, ModelCapacity>,
     participant_bytes: usize,
     mapping_bytes: usize,
     participant_pool: usize,
@@ -14,8 +35,19 @@ pub(super) struct Budget {
     review_room: usize,
 }
 impl Budget {
-    pub fn new(catalog: &Value, config: &Configuration, input_bytes: usize) -> Result<Self> {
+    pub fn new(
+        catalog: &Value,
+        config: &Configuration,
+        input_bytes: usize,
+        user_image_count: usize,
+    ) -> Result<Self> {
         let mut models = BTreeMap::new();
+        // Reserve generation space for planning, independently of the actual
+        // per-request generation limit. Count model-visible material.
+        let base = future_fusion::CONTEXT_MARGIN
+            .saturating_add(input_bytes)
+            .saturating_add(16_384);
+        let minimum_room = MIN_REPORT_BYTES * config.panel.len().max(2);
         for profile in config.panel.iter().chain([&config.moderator]) {
             let Some(model) = catalog["models"]
                 .as_array()
@@ -41,29 +73,32 @@ impl Budget {
                 .filter(|n| *n > 0)
                 .with_context(|| format!("Fusion model {} requires positive maxTokens from list_models; upgrade Agent and Host together", profile.model))?
                 as usize;
-            models.insert(profile.model.clone(), (window, output.max(1).min(window)));
+            let mut capacity = ModelCapacity {
+                window,
+                output: output.max(1).min(window),
+                image_limit: 0,
+            };
+            if model["supportsImages"] == true {
+                let image_room = capacity.report_room(base).saturating_sub(minimum_room);
+                capacity.image_limit = user_image_count.min(image_room / USER_IMAGE_CONTEXT_TOKENS);
+            }
+            models.insert(profile.model.clone(), capacity);
         }
-        let &(window, output) = models
+        let moderator = models
             .get(&config.moderator.model)
             .context("Missing moderator capacity")?;
-        // Reserve generation space for capacity planning, independently of the
-        // actual per-request generation limit. Count real task/report bytes;
-        // transport JSON escaping is not model-visible context.
-        let base = future_fusion::CONTEXT_MARGIN
-            .saturating_add(input_bytes)
-            .saturating_add(16_384);
-        let room = window.saturating_sub(output.min(window / 4).saturating_add(base));
+        let room = moderator.report_room(base);
         let review_room = models
             .values()
-            .map(|(w, o)| w.saturating_sub(o.min(&(w / 4)).saturating_add(base)))
+            .map(|model| model.report_room(base))
             .min()
             .unwrap_or(0);
         // A reviewer receives its own report and the moderator map.
         let participant_bytes = (room / config.panel.len().max(1)).min(review_room / 2);
-        ensure!(participant_bytes >= 1024, "Task context leaves insufficient moderator capacity; narrow the discussion before dispatch");
+        ensure!(participant_bytes >= MIN_REPORT_BYTES, "Task context leaves insufficient moderator capacity; narrow the discussion before dispatch");
         let mapping_bytes = review_room.saturating_sub(participant_bytes).min(room);
         ensure!(
-            mapping_bytes >= 1024,
+            mapping_bytes >= MIN_REPORT_BYTES,
             "Insufficient context for a sourced moderator map"
         );
         Ok(Self {
@@ -88,7 +123,7 @@ impl Budget {
             })
             .collect::<Result<Vec<_>>>()?;
         let per_report = if phase == "analyzing" {
-            self.review_room.saturating_sub(1024)
+            self.review_room.saturating_sub(MIN_REPORT_BYTES)
         } else {
             usize::MAX
         };
@@ -170,7 +205,7 @@ impl Budget {
         prompt: &str,
         settings: &mut StepSettings,
     ) -> Result<()> {
-        let &(window, natural_output) = self
+        let capacity = self
             .models
             .get(model)
             .context("Unknown Fusion model capacity")?;
@@ -179,24 +214,40 @@ impl Budget {
             "issue_mapping" => self.mapping_bytes,
             _ => usize::MAX,
         };
-        let remaining =
-            window.saturating_sub(prompt.len().saturating_add(future_fusion::CONTEXT_MARGIN));
-        let output = natural_output.min(remaining);
+        let remaining = capacity
+            .window
+            .saturating_sub(prompt.len().saturating_add(future_fusion::CONTEXT_MARGIN));
+        let image_limit = if phase == "preflight" {
+            0
+        } else {
+            let image_room = remaining.saturating_sub(MIN_GENERATION_TOKENS);
+            capacity
+                .image_limit
+                .min(image_room / USER_IMAGE_CONTEXT_TOKENS)
+        };
+        let image_tokens = image_limit * USER_IMAGE_CONTEXT_TOKENS;
+        let remaining = remaining - image_tokens;
+        let output = capacity.output.min(remaining);
         // Generation includes reasoning as well as public text. Only public
         // text is forwarded; its byte allocation is validated independently.
         // A downstream byte quota must never become a reasoning-token cap.
         ensure!(
-            output >= 256,
+            output >= MIN_GENERATION_TOKENS,
             "Fusion prompt cannot fit the model context with output reserve"
         );
-        settings.context_window = window;
+        settings.context_window = capacity.window;
         settings.max_output_tokens = output.min(i32::MAX as usize) as i32;
+        settings.user_image_limit = image_limit;
         settings.max_public_bytes = if public_bytes == usize::MAX {
             0
         } else {
             public_bytes
         };
-        future_fusion::guard_context(prompt.len(), window, output)?;
+        future_fusion::guard_context(
+            prompt.len().saturating_add(image_tokens),
+            capacity.window,
+            output,
+        )?;
         Ok(())
     }
 }
@@ -214,7 +265,7 @@ mod tests {
     }
     #[test]
     fn pools_spare_capacity_and_bounds_the_combined_moderator_input() {
-        let mut budget = Budget::new(&catalog(262144), &Configuration::default(), 1000).unwrap();
+        let mut budget = Budget::new(&catalog(262144), &Configuration::default(), 1000, 0).unwrap();
         let long = "A".repeat(budget.participant_bytes + 2000);
         let mut reports = vec![
             json!({"participant":"P1","response":long}),
@@ -270,7 +321,7 @@ mod tests {
         };
         let decoded = future_rpc::decode::response_data(&response);
         let config = Configuration::default();
-        let budget = Budget::new(&decoded, &config, 1748).unwrap();
+        let budget = Budget::new(&decoded, &config, 1748, 0).unwrap();
         for profile in config.panel.iter().chain([&config.moderator]) {
             let mut settings = super::super::attempt_settings(&config, profile, None, 0).unwrap();
             budget
@@ -283,7 +334,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("maxTokens");
-        let Err(error) = Budget::new(&legacy, &config, 1748) else {
+        let Err(error) = Budget::new(&legacy, &config, 1748, 0) else {
             panic!("invented capacity for an old Agent");
         };
         assert!(error.to_string().contains("future/deepseek-flash"));
@@ -292,18 +343,18 @@ mod tests {
     #[test]
     fn sharing_more_roles_reduces_output_without_overbooking_moderator() {
         let mut config = Configuration::default();
-        let smaller = Budget::new(&catalog(262144), &config, 1000).unwrap();
+        let smaller = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
         config
             .panel
             .extend([config.panel[0].clone(), config.panel[0].clone()]);
-        let larger = Budget::new(&catalog(262144), &config, 1000).unwrap();
+        let larger = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
         assert!(larger.participant_bytes < smaller.participant_bytes);
         assert!(larger.participant_bytes * 5 + 32768 + future_fusion::CONTEXT_MARGIN < 262144);
-        assert!(Budget::new(&catalog(32768), &config, 30000).is_err());
-        assert!(Budget::new(&catalog(0), &config, 0).is_err());
+        assert!(Budget::new(&catalog(32768), &config, 30000, 0).is_err());
+        assert!(Budget::new(&catalog(0), &config, 0, 0).is_err());
         let mut mixed = catalog(1048576);
         mixed["models"][1]["contextWindow"] = json!(131072);
-        assert!(Budget::new(&mixed, &Configuration::default(), 1000).is_ok());
+        assert!(Budget::new(&mixed, &Configuration::default(), 1000, 0).is_ok());
     }
     #[test]
     fn participant_reasoning_is_independent_of_forwarded_public_bytes() {
@@ -316,7 +367,7 @@ mod tests {
             config.panel = vec![config.panel[0].clone(); count];
             // Reproduce the device run that reduced DeepSeek to 9,929 tokens
             // by dividing its 39,718-byte public allocation by four.
-            let budget = Budget::new(&catalog, &config, 1748).unwrap();
+            let budget = Budget::new(&catalog, &config, 1748, 0).unwrap();
             for phase in ["analyzing", "reviewing"] {
                 for retry in [None, Some(super::super::RetryReason::InvalidOutput)] {
                     let mut settings =
@@ -348,7 +399,7 @@ mod tests {
     #[test]
     fn actual_prompt_admission_is_checked_before_dispatch() {
         let config = Configuration::default();
-        let budget = Budget::new(&catalog(262144), &config, 1000).unwrap();
+        let budget = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
         let mut settings =
             super::super::attempt_settings(&config, &config.panel[0], None, 0).unwrap();
         budget
@@ -373,6 +424,93 @@ mod tests {
                 &"x".repeat(262144),
                 &mut settings
             )
+            .is_err());
+    }
+
+    #[test]
+    fn image_context_is_reserved_only_for_vision_steps_after_preflight() {
+        let config = Configuration::default();
+        let window = 262144;
+        let mut catalog = catalog(window);
+        for model in catalog["models"].as_array_mut().unwrap() {
+            model["supportsImages"] = json!(model["id"] == "deepseek-flash");
+            model["maxTokens"] = json!(window);
+        }
+        let text_only = Budget::new(&catalog, &config, 1000, 0).unwrap();
+        let images = Budget::new(&catalog, &config, 1000, 2).unwrap();
+        let image_tokens = 2 * USER_IMAGE_CONTEXT_TOKENS;
+        assert_eq!(
+            images.moderator_room + image_tokens,
+            text_only.moderator_room
+        );
+        assert_eq!(images.review_room + image_tokens, text_only.review_room);
+
+        for (model, phase, reserve) in [
+            (&config.moderator, "preflight", 0),
+            (&config.moderator, "synthesizing", image_tokens),
+            (&config.panel[1], "reviewing", 0),
+        ] {
+            let mut settings = super::super::attempt_settings(&config, model, None, 0).unwrap();
+            images
+                .apply(&model.model, phase, "task", &mut settings)
+                .unwrap();
+            assert_eq!(
+                settings.user_image_limit,
+                reserve / USER_IMAGE_CONTEXT_TOKENS
+            );
+            assert_eq!(
+                settings.max_output_tokens as usize,
+                window - 4 - future_fusion::CONTEXT_MARGIN - reserve
+            );
+        }
+    }
+
+    #[test]
+    fn low_context_models_keep_report_room_with_the_images_that_fit() {
+        let config = Configuration::default();
+        let mut catalog = catalog(1_000_000);
+        for model in catalog["models"].as_array_mut().unwrap() {
+            model["supportsImages"] = json!(true);
+        }
+        catalog["models"][1]["contextWindow"] = json!(50_000);
+        catalog["models"][2]["contextWindow"] = json!(40_000);
+        let budget = Budget::new(&catalog, &config, 1000, 4).unwrap();
+        assert!(budget.participant_bytes >= MIN_REPORT_BYTES);
+        assert!(budget.mapping_bytes >= MIN_REPORT_BYTES);
+        for (model, limit) in config.panel.iter().zip([4, 1, 0]) {
+            let mut settings = super::super::attempt_settings(&config, model, None, 0).unwrap();
+            budget
+                .apply(&model.model, "analyzing", "task", &mut settings)
+                .unwrap();
+            assert_eq!(settings.user_image_limit, limit);
+        }
+    }
+
+    #[test]
+    fn image_limit_shrinks_when_a_later_prompt_takes_more_context() {
+        let config = Configuration::default();
+        let window = 131_072;
+        let mut catalog = catalog(window);
+        catalog["models"][0]["supportsImages"] = json!(true);
+        let budget = Budget::new(&catalog, &config, 1000, 4).unwrap();
+        let model = &config.moderator;
+        let mut settings = super::super::attempt_settings(&config, model, None, 0).unwrap();
+        let room = window - future_fusion::CONTEXT_MARGIN - MIN_GENERATION_TOKENS;
+        let prompt = "X".repeat(room + 1);
+        for limit in [4, 2, 0] {
+            let len = room - USER_IMAGE_CONTEXT_TOKENS * limit;
+            budget
+                .apply(&model.model, "synthesizing", &prompt[..len], &mut settings)
+                .unwrap();
+            assert_eq!(settings.user_image_limit, limit);
+            assert_eq!(settings.max_output_tokens as usize, MIN_GENERATION_TOKENS);
+        }
+        assert!(serde_json::to_value(&settings)
+            .unwrap()
+            .get("user_image_limit")
+            .is_none());
+        assert!(budget
+            .apply(&model.model, "synthesizing", &prompt, &mut settings)
             .is_err());
     }
 }

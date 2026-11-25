@@ -1,5 +1,5 @@
 //! A complete ledger of consequential disagreements, separate from prose packing.
-use super::quotes::select_text as source_text;
+use super::quotes::{contains_report, select_text as source_text};
 use anyhow::{ensure, Context, Result};
 use future_fusion::{parse_json, Consultation};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,9 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MARKER: &str = "\nDecision audit packet:\n";
-pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. For participant reports use /response for the source report itself, or a path such as /current_answer for a text field inside its decoded JSON. Cite substantive report text; validation_errors and forwarded_truncated describe processing and cannot serve as evidence. The host copies the selected text verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Each support disposition identifies the initial candidate and the current report for that advisor. Evaluate the original recommendation and its key support alongside any later revision. For support dispositions, accepted means the initial recommendation is incorporated, rejected means a materially different recommendation replaces it, and unresolved means its decisive comparison remains open. If replacing the recommendation, identify the premise, inference, or comparison that fails, explain how that changes the answer under the user’s criterion, and cite the particular original passage or rebutting material. A source showing that someone changed their answer proves only the revision; quote the reasoning or evidence behind it. A competing interpretation can limit certainty without invalidating the original interpretation. When the task asks for a judgment or estimate, use its stated criterion to choose the best-supported answer and retain material uncertainty; evidence for a related question does not decide the requested judgment. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Set resolution according to whether the original task is resolved. Use settled only when unresolved is empty and no disposition is unresolved. If you can establish that the supplied information is insufficient to answer the task, use insufficient_information and list what is missing, even if you are certain that it is missing. If you can answer only under an unverified assumption, use conditional and identify that assumption in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
+const REVIEW_MAJORITY: &str = "review_majority";
+pub(super) const INSTRUCTIONS: &str = r#"Decision audit protocol: the packet lists consequential objections, not every difference. Address EVERY listed ID exactly once in decision_audit.dispositions. Each disposition has id, decision (accepted|rejected|unresolved), reason, effect, and basis (array of {source_id,source_path} or {source_id,quote}). Prefer source_path, a JSON Pointer to an existing text field in that source, such as /reason for an objection or /current_answer for a participant report. For participant reports use /response for the source report itself, or a path such as /current_answer for a text field inside its decoded JSON. Cite substantive report text; validation_errors and forwarded_truncated describe processing and cannot serve as evidence. The host copies the selected text verbatim. Use quote for an exact excerpt when you need part of a longer source or the source is plain text. Supply only one of source_path and quote. Accepted/rejected require at least one source citation AND a reason explaining why it answers the objection; quotation or majority alone is not a refutation. Accepted means its impact is incorporated; rejected means it does not overturn the conclusion; unresolved means the decisive check remains open. Never mark resolution settled with an unresolved objection. Each support disposition identifies the initial candidate and the current report for that advisor. When reviewed_position is true, accepted incorporates the current validated review conclusion, rejected overrides it, and unresolved keeps its decisive comparison open. Otherwise evaluate the available report as attributed evidence. Cite the reviewed report when overriding its conclusion, name the exact premise, inference, or comparison that fails, and explain how it changes the answer under the user’s criterion. Include the specific contrary evidence where applicable. A source showing that someone changed their answer proves only the revision; quote the reasoning or evidence behind it. A competing interpretation can limit certainty without invalidating the original interpretation. When the task asks for a judgment or estimate, use its stated criterion to choose the best-supported answer and retain material uncertainty; evidence for a related question does not decide the requested judgment. An accepted missing-premise objection remains an open dependency until that premise is established or its dependent claim is excluded. Do not accept the gap and then use the same assumption to select an unconditional answer. Option construction, inferred author intent and absence of contradiction do not discharge it. Set resolution according to whether the original task is resolved. Use settled only when unresolved is empty and no disposition is unresolved. If you can establish that the supplied information is insufficient to answer the task, use insufficient_information and list what is missing, even if you are certain that it is missing. If you can answer only under an unverified assumption, use conditional and identify that assumption in the answer and unresolved list. Source matches verify provenance, not truth or entailment. A missing premise cannot be disposed of merely by demanding disproof of the conclusion that depends on it. Distinguish the conclusion that is usable under established premises from an optional extension that needs an extra assumption. If an unresolved premise changes which answer or action is justified, identify exactly that dependency; do not merely label the metadata conditional while presenting the extension as established. A user-requested conditional plan or possible outcome may remain conditional; do not suppress useful supported results.
+Count only one current validated and complete review per participant. Group equivalent recommendations under the original criterion and default to a strict majority of the participating panel. A member’s first answer and their agreement with a frozen initial excerpt do not supply additional votes. If the packet has review_majority, the host identified an exact majority recommendation. Accept it and deliver that recommendation in a closed task unless a decisive rebuttal overturns it. To reject it, cite a precise passage containing the failed step in a majority review, or cite the majority review together with concrete rebutting evidence. Explain the error and its effect under the original criterion. An alternate interpretation or vote count alone cannot overturn supported reasoning. If a decisive check remains open, use a conditional or insufficient-information resolution and convey the gap in the answer.
 Apply accepted objections and unresolved dependencies to the actual user-facing answer before returning it; this report is delivered directly, with no later model reconciliation. Return JSON with decision_audit:{resolution:"settled|conditional|insufficient_information",dispositions:[],decision_update:null}. Only fill decision_update when the packet has a backend-provided lineage object. If lineage is null, omit decision_update or use null. An initial candidate or a review in this discussion is not a previous decision; record its treatment in dispositions. For a reopened decision, decision_update must be {decision:"maintain|revise",reason:"specific evidence/counterexample/corrected inference and its impact under the inherited criterion"}. Maintaining means preserving the previous user-facing answer verbatim. Revising needs a concrete justification; another vote or confidence is not enough. Inherit unresolved checks until explicitly disposed of. The previous conclusion is the working result; do not restart the whole problem. For closed tasks add decision_audit to the closed answer protocol. For general tasks use {conclusion:"self-contained answer in the requested format",unresolved:[],decision_audit:{...}}; only conclusion is delivered as prose."#;
 
 /// Bind the original request as the decision criterion for every candidate.
@@ -111,6 +113,7 @@ pub(super) fn packet(
 ) -> Value {
     let mut objections = BTreeMap::new();
     let mut sources = BTreeMap::new();
+    let mut recommendations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     sources.insert(
         "request".to_string(),
         json!(run
@@ -141,20 +144,52 @@ pub(super) fn packet(
                 }),
             );
             if !initial {
+                let reviewed_position = report["source_phase"] == "reviewing"
+                    && report["forwarded_truncated"] != true
+                    && !report["validation_errors"]
+                        .as_array()
+                        .is_some_and(|errors| !errors.is_empty());
+                let reviewed = if reviewed_position {
+                    parse_json::<Value>(text).ok()
+                } else {
+                    None
+                };
+                if let Some(recommendation) = reviewed
+                    .as_ref()
+                    .and_then(|review| review["recommendation"].as_str())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    recommendations
+                        .entry(recommendation.to_owned())
+                        .or_default()
+                        .insert(source_id.clone());
+                }
                 let initial_source = if report["source_phase"] == "reviewing" {
                     format!("initial:{id}")
                 } else {
                     source_id.clone()
                 };
-                // Reuse the existing per-advisor support disposition on every
-                // path. It now connects the first analysis and the current view.
                 objections.insert(format!("support:{id}"), json!({
-                    "topic":"Determine whether the original recommendation and its key reasoning survive the review and the original task. If the recommendation is superseded, explain the decisive error or contrary evidence and how it changes the answer.",
+                    "topic":"Assess this participant's current recommendation under the original task. Consider their initial reasoning as evidence, and explain any decisive error or contrary evidence if overriding the current review.",
                     "initial_source":initial_source,
                     "report_source":source_id,
+                    "reviewed_position":reviewed.is_some(),
                 }));
             }
         }
+    }
+    let participant_count = objections.len();
+    if let Some((recommendation, reports)) = recommendations
+        .into_iter()
+        .find(|(_, reports)| reports.len() >= 2 && reports.len() > participant_count / 2)
+    {
+        objections.insert(REVIEW_MAJORITY.to_owned(), json!({
+            "topic":"Default to this exact post-review majority recommendation. Cite the failed step or rebutting evidence if departing from it.",
+            "recommendation":recommendation,
+            "reports":reports,
+            "participating_count":participant_count,
+         }));
     }
     for issue in mapping["issues"].as_array().into_iter().flatten() {
         if let Some(id) = issue["id"].as_str() {
@@ -337,6 +372,19 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
                 "{field}: resolved objection requires a source basis"
             ));
         }
+        if d.decision == Decision::Rejected
+            && d.id.starts_with("support:")
+            && objections.get(&d.id).is_some_and(|objection| {
+                objection["reviewed_position"] == true
+                    && !d.basis.iter().any(|basis| {
+                        objection["report_source"].as_str() == Some(basis.source_id.as_str())
+                    })
+            })
+        {
+            errors.push(format!(
+                "{field}: Cite the current review and identify the step or evidence that overrides its conclusion"
+            ));
+        }
         for (reference, basis) in d.basis.iter().enumerate() {
             let field = format!("{field}.basis[{reference}]");
             let Some(source) = packet["sources"].get(&basis.source_id) else {
@@ -345,12 +393,23 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
             };
             let (material, decoded) = citation_material(source, &basis.source_id);
             match (&basis.source_path, &basis.quote) {
-                (Some(path), None) => {
-                    if citation_text(source, &basis.source_id, decoded.as_ref(), path).is_none() {
-                        errors.push(format!(
+                (Some(path), quote) => {
+                    match citation_text(source, &basis.source_id, decoded.as_ref(), path) {
+                        None => errors.push(format!(
                             "{field}.source_path {path:?} is not a text field in source {:?}",
                             basis.source_id
-                        ));
+                        )),
+                        Some(selected)
+                            if quote
+                                .as_deref()
+                                .is_some_and(|excerpt| !contains_report(selected, excerpt)) =>
+                        {
+                            errors.push(format!(
+                                "{field}.quote does not match the text at source_path {path:?} in source {:?}",
+                                basis.source_id
+                            ));
+                        }
+                        Some(_) => {}
                     }
                 }
                 (None, Some(quote)) => {
@@ -370,7 +429,7 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
                         }
                     }
                 }
-                _ => errors.push(format!("{field}: supply one of source_path and quote")),
+                (None, None) => errors.push(format!("{field}: supply source_path or quote")),
             }
         }
         if d.decision == Decision::Unresolved && audit.resolution == Resolution::Settled {
@@ -392,6 +451,9 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .context("Missing user-facing conclusion")?;
+    if let Some(majority) = objections.get(REVIEW_MAJORITY) {
+        validate_review_majority(&audit, majority, answer, closed)?;
+    }
     let unresolved: Vec<String> =
         serde_json::from_value(result["unresolved"].clone()).context("Missing unresolved array")?;
     ensure!(
@@ -429,6 +491,52 @@ pub(super) fn validate(text: &str, packet: &Value, closed: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_review_majority(
+    audit: &Audit,
+    majority: &Value,
+    answer: &str,
+    closed: bool,
+) -> Result<()> {
+    let disposition = audit
+        .dispositions
+        .iter()
+        .find(|disposition| disposition.id == REVIEW_MAJORITY)
+        .context("Missing disposition for the reviewed majority")?;
+    let recommendation = majority["recommendation"]
+        .as_str()
+        .context("Missing reviewed majority recommendation")?;
+    let reports = majority["reports"]
+        .as_array()
+        .context("Missing reviewed majority reports")?;
+    let cites_majority = |basis: &Basis| {
+        reports
+            .iter()
+            .any(|report| report.as_str() == Some(basis.source_id.as_str()))
+    };
+    ensure!(
+        disposition.basis.iter().any(cites_majority),
+        "Cite a current review when deciding the reviewed majority"
+    );
+    if closed && disposition.decision != Decision::Unresolved {
+        ensure!(
+            (disposition.decision == Decision::Accepted) == (answer.trim() == recommendation),
+            "The delivered answer must follow the accepted reviewed majority or explicitly override it"
+        );
+    }
+    if disposition.decision == Decision::Rejected {
+        ensure!(
+            disposition.basis.iter().any(|basis| {
+                (cites_majority(basis) && basis.quote.is_some())
+                    || (!cites_majority(basis)
+                        && basis.source_id != "objection:review_majority"
+                        && !basis.source_id.starts_with("objection:support:"))
+            }),
+            "Overriding the reviewed majority requires a quoted failed step or a separate rebutting source"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn attach(
     result: &mut future_fusion::Conclusion,
     text: &str,
@@ -438,7 +546,7 @@ pub(super) fn attach(
     if let Some(raw) = value.get("decision_audit") {
         let mut audit: Audit = serde_json::from_value(raw.clone())?;
         for basis in audit.dispositions.iter_mut().flat_map(|d| &mut d.basis) {
-            if let Some(path) = basis.source_path.take() {
+            if let (Some(path), None) = (basis.source_path.take(), &basis.quote) {
                 let source = &packet["sources"][&basis.source_id];
                 let (_, decoded) = citation_material(source, &basis.source_id);
                 basis.quote = Some(
@@ -558,6 +666,52 @@ mod tests {
             let source = &packet["sources"][id];
             assert_eq!(citation_text(source, id, None, "/response"), Some(expected));
         }
+    }
+
+    #[test]
+    fn only_complete_current_reviews_form_the_exact_majority() {
+        let run: Consultation = serde_json::from_value(json!({
+            "id":"run","parent":{"database_id":"db","session_id":"s","run_id":"r","tool_call_id":"t"},
+            "input":{"question":"Choose storage","goal":"Keep data","background":"","constraints":[],"evidence":[]},
+            "workspace":"/workspace","snapshot_root":"/snapshot","status":"running","phase":"synthesizing",
+            "completeness":"full","created_at":0,"updated_at":0
+        })).unwrap();
+        let mut current = vec![
+            json!({"participant":"P1","source_phase":"initial_analysis","response":"Local storage"}),
+            json!({"participant":"P1","source_phase":"reviewing","response":r#"{"recommendation":"Replicated storage"}"#}),
+            json!({"participant":"P2","source_phase":"reviewing","response":r#"{"recommendation":"Replicated storage"}"#}),
+            json!({"participant":"P3","source_phase":"reviewing","response":r#"{"recommendation":"Local storage"}"#}),
+        ];
+        let mapping = json!({"issues":[]});
+        let ledger = packet(&run, &mapping, &[], &current);
+        let majority = &ledger["objections"][REVIEW_MAJORITY];
+        assert_eq!(majority["recommendation"], "Replicated storage");
+        assert_eq!(majority["reports"], json!(["report:P1", "report:P2"]));
+        current[1]["forwarded_truncated"] = json!(true);
+        assert!(packet(&run, &mapping, &[], &current)["objections"][REVIEW_MAJORITY].is_null());
+    }
+
+    #[test]
+    fn departing_from_the_reviewed_majority_requires_a_cited_rebuttal() {
+        let (mut value, mut packet) = fixture();
+        packet["sources"]["report:P1"] = json!({"response":r#"{"current_answer":"Use replicated storage when multiple hosts can connect"}"#});
+        packet["objections"][REVIEW_MAJORITY] = json!({
+            "recommendation":"Use replicated storage", "reports":["report:P1", "report:P2"]
+        });
+        value["answer"] = json!("Use replicated storage");
+        value["decision_audit"]["dispositions"].as_array_mut().unwrap().push(json!({
+            "id":REVIEW_MAJORITY,"decision":"accepted","reason":"Review assumes multiple connected hosts",
+            "effect":"Use replicated storage", "basis":[{"source_id":"report:P1","source_path":"/current_answer"}]
+        }));
+        validate(&value.to_string(), &packet, true).unwrap();
+        value["answer"] = json!("Use local storage");
+        assert!(validate(&value.to_string(), &packet, true).is_err());
+        value["decision_audit"]["dispositions"][1]["decision"] = json!("rejected");
+        assert!(validate(&value.to_string(), &packet, true).is_err());
+        value["decision_audit"]["dispositions"][1]["basis"] = json!([
+            {"source_id":"report:P1","quote":"when multiple hosts can connect"}
+        ]);
+        validate(&value.to_string(), &packet, true).unwrap();
     }
 
     #[test]
@@ -702,9 +856,9 @@ mod tests {
     }
 
     #[test]
-    fn source_paths_reject_invalid_fields_and_ambiguous_citations() {
+    fn source_paths_accept_redundant_quotes_only_from_the_selected_field() {
         let (mut value, mut packet) = fixture();
-        packet["sources"]["report:P1"] = json!({"response":"{\"participant\":\"P1\",\"reason\":\" \",\"count\":5,\"text\":\"Original evidence\"}"});
+        packet["sources"]["report:P1"] = json!({"response":"{\"participant\":\"P1\",\"reason\":\" \",\"count\":5,\"text\":\"Original evidence\",\"other\":\"Different passage\"}"});
         for path in [
             "/missing",
             "/participant",
@@ -721,8 +875,17 @@ mod tests {
             );
         }
         value["decision_audit"]["dispositions"][0]["basis"] =
-            json!([{"source_id":"report:P1","source_path":"/text","quote":"Original evidence"}]);
+            json!([{"source_id":"report:P1","source_path":"/text","quote":"Different passage"}]);
         assert!(validate(&value.to_string(), &packet, false).is_err());
+        value["decision_audit"]["dispositions"][0]["basis"][0]["quote"] = json!("evidence");
+        let report = value.to_string();
+        validate(&report, &packet, false).unwrap();
+        let mut result = future_fusion::Conclusion::default();
+        attach(&mut result, &report, &packet).unwrap();
+        assert_eq!(
+            result.decision_audit.unwrap()["dispositions"][0]["basis"][0],
+            json!({"source_id":"report:P1","quote":"evidence"})
+        );
     }
 
     #[test]

@@ -250,11 +250,16 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     ensure!(store.phase(&run.id, owner, "preflight")?, "Fusion stopped");
     let snapshot = future_fusion::Snapshot::load(std::path::Path::new(&run.snapshot_root))?;
     let sources = evidence::Sources::new(&run.input, Some(&snapshot));
-    let mut decision_input = serde_json::to_value(&run.input)?;
+    let mut decision_input = evidence::prompt_input(&run.input);
     decision_input["source_manifest"] = sources.manifest();
     decision_input["decision_lineage"] = serde_json::to_value(&run.lineage)?;
     let input = serde_json::to_string(&decision_input)?;
-    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(&catalog, config, input.len())?);
+    *ctx.budget.lock().unwrap() = Some(budget::Budget::new(
+        &catalog,
+        config,
+        input.len(),
+        snapshot.user_images.len(),
+    )?);
     let probe = async {
         if !ctx.healthy() {
             with_retry(&ctx, "preflight", &config.moderator, "moderator", "This is a Fusion readiness check. Reply READY. Do not investigate, use tools, or discuss a task.", None).await?;
@@ -276,14 +281,16 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         return Err(error);
     }
     let grounding = format!("{}\n{}", future_fusion::GROUNDING_POLICY, evidence::POLICY);
-    let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. Background is a factual context summary, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in background and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
+    let intro = "You are in a focused READ-ONLY consultation, not an executor. Analyze only the decision and supplied evidence. The history_summary is attributed context from the parent, not a proposed solution or authority. Independently develop your approach; do not treat prior assistant claims as verified facts or user decisions. User-provided proposals are attributed in history_summary and do not restrict alternatives unless the user explicitly requested that. Use only supplied read/ls/glob/grep tools. Never write, run commands, implement, or call agents. Give public reasons, not hidden chain of thought. Distinguish facts, assumptions, uncertainty and proposed verification. Empty read scope means decide only from the supplied facts.";
     ensure!(store.phase(&run.id, owner, "analyzing")?, "Fusion stopped");
     let report_format = if run.input.answer_only {
         answer::INSTRUCTIONS
     } else {
         "Return your public report as plain text or Markdown without a JSON envelope."
     };
-    let mut analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the question. Investigate and think as needed before your final report. {report_format} Do not assume other participants' views."), None).await?;
+    let coverage_check = evidence::COVERAGE_CHECK;
+    let reproducible_check = evidence::REPRODUCIBLE_CHECK;
+    let analyses = panel(&ctx, &eligible, "analyzing", &format!("{intro}\n{grounding}\nDecision input:\n{input}\nIndependently answer the discussion task within the original user request. {coverage_check} {reproducible_check} {report_format} Do not assume other participants' views."), None).await?;
     if analyses.is_empty() {
         ctx.note(
             "no_participants",
@@ -298,16 +305,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     }
     let closed_consensus =
         run.input.answer_only && answer::clear_agreement(&analyses, config.panel.len());
-    if run.input.answer_only {
-        for analysis in &mut analyses {
-            if let Some(parsed) = analysis["response"]
-                .as_str()
-                .and_then(|s| answer::parse(s).ok())
-            {
-                analysis["response"] = json!(answer::public_text(parsed));
-            }
-        }
-    }
+    // Keep the original structured fields addressable in mapping and review.
+    let mut mapping_analyses = analyses.clone();
     let active = analyses
         .iter()
         .filter_map(|v| {
@@ -329,7 +328,6 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
             report.note("participants_reduced", "analyzing", None, None);
         }
     })?;
-    let mut mapping_analyses = analyses.clone();
     fit_material(&ctx, "analyzing", &mut mapping_analyses)?;
     let first = serde_json::to_string(&mapping_analyses)?;
     let mut issues = json!({"issues":[]});
@@ -491,6 +489,13 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     let analysis_count = analyses.len();
     let mut current = Vec::with_capacity(analysis_count + reviews.len());
     for mut analysis in analyses {
+        if let Some(parsed) = analysis["response"]
+            .as_str()
+            .filter(|_| run.input.answer_only)
+            .and_then(|text| answer::parse(text).ok())
+        {
+            analysis["response"] = json!(answer::public_text(parsed));
+        }
         let reviewed = reviews
             .iter()
             .find(|r| r["participant"] == analysis["participant"]);
@@ -546,11 +551,14 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
     } else {
         "Return only a plain text or Markdown answer without a fixed template or meeting recap."
     };
+    let decisive_comparison = evidence::DECISIVE_COMPARISON;
     let mut prompt = format!(
-        "You are the moderator. Give the main agent a self-contained answer to the original task. \
+        "You are the moderator. Give the main agent a self-contained answer to the discussion task within the original user request. \
         {grounding} \
         Judge consequential claims by their support in the original task and participant material. \
         Apply the user's decision rule as written, including explicit defaults and thresholds. \
+        {coverage_check} \
+        {decisive_comparison} \
         Give a concrete derivation or exact source passage priority over a competing assertion. \
         Before changing an answer supported by such a derivation, identify the specific step that fails or the contrary evidence and its effect under the original criterion. \
         Before declaring insufficient information, check whether the claimed gap actually changes the decision under the user's rule. \
@@ -558,8 +566,8 @@ async fn execute(store: &Store, owner: &str, run: &Consultation) -> Result<()> {
         Count independent support separately from agreement that repeats a premise. \
         For a material change of position, identify the new evidence or corrected inference that justifies it under the original decision criterion; do not silently substitute another criterion. \
         Resolve a decisive objection against its source even if only one participant raised it; voting and confidence do not answer a counterexample. \
-        Preserve the best supported answer unless that check actually overturns its support. \
-        Compare revised positions with their preserved initial candidates. A revision or a majority does not by itself defeat an earlier derivation. Preserve an earlier valid objection if the reviews did not answer it. \
+        Count each validated, complete review once and group equivalent current recommendations under the same user criterion. Use the post-review majority by default. \
+        Reconsider an earlier derivation as evidence, without counting it as another vote after that member revised. Override the reviewed majority only after identifying and citing the specific failed step or evidence that overturns its support, and explain how that changes the result. A plausible alternate reading alone is insufficient. Preserve earlier objections the reviews did not answer. \
         If an assumption is necessary to choose, state it and how it affects the answer; if the decision can proceed under it, give the useful conditional conclusion. \
         Do not invent facts, proposals or user requirements. Treat verification labels and reports with validation errors as participant claims; unmatched quotations do not establish evidence. \
         Report any unresolved issue that changes the result. Respect the actual coverage. Missing reviews mean no cross-review. \
@@ -793,6 +801,7 @@ fn attempt_settings(
         max_output_tokens: 0, // Filled by per-attempt context allocation.
         context_window: 0,
         max_public_bytes: 0,
+        user_image_limit: 0,
         report_revision: 0,
         timeout_ms: if idle_timeout_ms.is_some() {
             0
@@ -1123,7 +1132,7 @@ async fn step_inner(
     .await?;
     let system_prompt = match step.phase.as_str() {
         "issue_mapping" => "You are a read-only Fusion moderator. Organize supplied positions and ask the panel only the checks that could change the result. Ground the checks in the task and analyses. Do not introduce findings or call tools.",
-        "synthesizing" => "You are a read-only Fusion moderator. Evaluate the support for consequential claims in the supplied task and reports, then synthesize the answer. Do not introduce new findings or call tools.",
+        "synthesizing" => "You are a read-only Fusion moderator. Evaluate consequential claims against the supplied task and reports, then synthesize the answer. You may check deductions directly against the supplied material. Do not add outside facts or call tools.",
         "preflight" => "Follow only the readiness-check request. Do not investigate or call tools.",
         _ => "You are a read-only Fusion deliberation participant. Never act on the workspace or external systems. Follow the focused decision task and use only the provided snapshot tools.",
     };
@@ -1158,7 +1167,7 @@ async fn step_inner(
     let prepare_report = |text: &str| -> Result<String> {
         let prepared = match phase.as_str() {
             "issue_mapping" => mapping::expand_citations(text, source_prompt)?,
-            "reviewing" => review::expand_citations(text, source_prompt)?,
+            "reviewing" => review::expand_citations(text, source_prompt, &run.input)?,
             "synthesizing" => match ctx.synthesis_audit.lock().unwrap().as_ref() {
                 Some(packet) => deliberation::prepare_report(text, packet)?,
                 None => text.to_owned(),
@@ -1194,7 +1203,13 @@ async fn step_inner(
         if phase == "issue_mapping" {
             mapping::validate_sources(text, source_prompt)?;
         } else if phase == "reviewing" {
-            review::validate(text, source_prompt, &participant, review_snapshot.as_ref())?;
+            review::validate(
+                text,
+                source_prompt,
+                &participant,
+                &run.input,
+                review_snapshot.as_ref(),
+            )?;
         }
         Ok(prepared)
     };

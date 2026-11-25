@@ -4855,6 +4855,8 @@ mod tests {
                     files: vec![],
                     directories: vec![],
                     excluded: vec![],
+                    user_images: vec![],
+                    unavailable_user_images: 0,
                     capture_started_at: 0,
                     capture_finished_at: 0,
                 },

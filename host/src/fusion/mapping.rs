@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const INSTRUCTIONS: &str = r#"You are the moderator organizing the supplied analyses and deciding what is worth checking. Return ONLY JSON with these four arrays:
 {"consensus":[{"point":"existing shared view","sources":[{"participant":"P1","quote":"exact excerpt"}]}],"issues":[{"topic":"existing disagreement","stances":[{"participant":"P1","status":"stated","position":"faithful summary","quote":"exact excerpt"},{"participant":"P2","status":"not_mentioned","position":"","quote":""}]}],"excluded":[{"participant":"P1","quote":"exact excerpt of existing statement","reason":"why it is outside an existing boundary or unsuitable for continued discussion","basis":"exact excerpt of an existing task boundary from Decision input"}],"review_focus":["question whose resolution could change the conclusion or next action"]}
-For a participant citation you may replace quote with quote_path (for example /answer or /support within that participant’s decoded response). Select a relevant text field. For a short excerpt use quote.
+For a participant citation, prefer a short exact quote from the visible response. When the response is a JSON object, quote_path may instead select a relevant string in that response, such as /answer or /support. Use quote_path /response only if the entire visible response is relevant and fits the report capacity.
 1. Consensus is ONLY the intersection explicitly stated by EVERY supplied participant. Cite an exact excerpt from each participant. Agreement does not establish truth. Do not upgrade shared assumptions to verified facts.
 2. Issues contain ONLY materially different existing claims, with at least two explicitly stated positions. Include every supplied participant once; mark an unmentioned position as not_mentioned with empty position and quote. Silence is not opposition. Preserve qualifications; do not invent a conflict from complementary details or omissions.
 3. Excluded contains ONLY existing statements that exceed explicit task constraints/scope or are otherwise unsuitable under an existing boundary in Decision input. Quote both the statement and that boundary. Do not exclude a minority view, an unfamiliar approach or a statement merely because you think it is wrong. With no applicable existing boundary, do not invent one.
 4. Review focus contains only consequential unresolved questions for the panel, up to three. Do not fill the allowance. Do not reopen a derivation already independently supplied with no concrete unresolved premise, counterexample or missing coverage. If all positions agree, the map has no material issues, and the reports already support the answer, leave review_focus empty. Combine differences driven by the same premise. Ask what evidence, counterexample or decision criterion would distinguish the positions, including when all participants rely on the same unresolved assumption. Keep the original question and other plausible answers in scope. Ask for a concrete check, not a restatement of the choices. Include a check if the task explicitly requests cross-review. Leave review_focus empty only if there are no material disagreements or unresolved checks and the shared conclusion directly answers the task with adequate independent support.
-Decision criterion: keep the requested standard fixed. If positions use different definitions, quantifiers or standards of support, make that difference a focused check against Decision input rather than choosing a new standard. Ask reviewers to resolve decisive counterexamples and contradictory supplied examples; a minority objection is not resolved by agreement among others.
+Decision criterion: keep the requested standard fixed. If positions use different definitions, quantifiers or standards of support, make that difference a focused check against Decision input rather than choosing a new standard. If a suggested check uses a restricted domain or different order of limits, ask whether that shortcut covers the original task before asking reviewers to solve the restricted problem. Ask reviewers to resolve decisive counterexamples and contradictory supplied examples; a minority objection is not resolved by agreement among others.
 Granularity: organize substantive positions, not every report detail. Keep the grounds and qualifications that make a position consequential, including a well-supported minority position. Cite short, exact contiguous excerpts from the supplied public answers. Agreement based on the same source or premise is repeated support, not independent confirmation.
 Completion: submit once the material positions and focused checks are represented. Questions in review_focus are the moderator's requests for review, not sourced claims or task requirements. Do not answer those questions yourself in the map, invent facts or attribute your questions to participants."#;
 
@@ -155,7 +155,8 @@ pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
         .iter()
         .filter_map(|row| {
             let id = row["participant"].as_str()?;
-            Some((id, parse_json::<Value>(row["response"].as_str()?).ok()?))
+            let response = row["response"].as_str()?;
+            Some((id, (response, parse_json::<Value>(response).ok())))
         })
         .collect();
     let expand_rows = |rows: &mut Value| -> Result<()> {
@@ -170,7 +171,11 @@ pub(super) fn expand_citations(text: &str, prompt: &str) -> Result<String> {
                 .and_then(Value::as_str)
                 .and_then(|id| sources.get(id));
             expand(row, "quote_path", "quote", |path| {
-                source.and_then(|value| select_text(value, path))
+                let (response, fields) = source?;
+                if path == "/response" {
+                    return Some(*response).filter(|text| !text.trim().is_empty());
+                }
+                select_text(fields.as_ref()?, path)
             })?;
         }
         Ok(())
@@ -212,17 +217,17 @@ pub(super) fn validate_sources(text: &str, prompt: &str) -> Result<()> {
         .rsplit_once("\nDecision input:\n")
         .context("Missing decision input")?;
     let input: Value = serde_json::from_str(input)?;
-    let mut boundaries = vec![];
-    for key in ["question", "goal", "background"] {
-        if let Some(value) = input[key].as_str() {
-            boundaries.push(value);
-        }
-    }
-    for value in input["constraints"].as_array().into_iter().flatten() {
-        if let Some(value) = value.as_str() {
-            boundaries.push(value);
-        }
-    }
+    let task = &input["discussion_task"];
+    let boundaries: Vec<_> = [
+        &input["parent_request"],
+        &input["history_summary"],
+        &task["question"],
+        &task["goal"],
+    ]
+    .into_iter()
+    .chain(task["constraints"].as_array().into_iter().flatten())
+    .filter_map(Value::as_str)
+    .collect();
     let quote = |participant: &str, excerpt: &str| -> Result<()> {
         ensure!(
             !excerpt.trim().is_empty()
@@ -285,7 +290,12 @@ mod tests {
     use serde_json::json;
 
     fn fixture() -> (Value, String) {
-        let input = json!({"question":"Choose a storage approach", "goal":"Keep existing data", "background":"User requests a storage comparison", "constraints":["Do not delete existing data"]});
+        let input = json!({
+            "parent_request":"Compare storage approaches without changing production.",
+            "discussion_task":{"question":"Choose a storage approach", "goal":"Keep existing data",
+                "constraints":["Do not delete existing data"]},
+            "history_summary":"User requests a storage comparison",
+        });
         let analyses = json!([
             {"participant":"P1", "response":"Keep data. Choose SQLite. Delete existing data."},
             {"participant":"P3", "response":"Keep data. Choose files."},
@@ -312,14 +322,17 @@ mod tests {
     #[test]
     fn resolves_quotes_only_from_the_named_participants_frozen_report() {
         // The original bbeh:408 mapping could not carry its hand-copied quote.
-        let input = serde_json::json!({"question":"Decide","goal":"Choose","background":"Context"});
+        let input = serde_json::json!({
+            "discussion_task":{"question":"Decide", "goal":"Choose"},
+            "history_summary":"Context",
+        });
         let analyses = serde_json::json!([
             {"participant":"P1","response":serde_json::json!({"answer":r#"Keep "existing data"."#}).to_string()},
-            {"participant":"P2","response":"{\"answer\":\"Keep data.\"}"}
+            {"participant":"P2","response":"Keep data."}
         ]);
         let prompt = format!("\nDecision input:\n{input}\nIndependent analyses:\n{analyses}");
         let mut map = serde_json::json!({"consensus":[{"point":"Keep data","sources":[
-            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/answer"}
+            {"participant":"P1","quote_path":"/answer"},{"participant":"P2","quote_path":"/response","quote":"Keep data"}
         ]}],"issues":[],"excluded":[]});
         let expanded = expand_citations(&map.to_string(), &prompt).unwrap();
         validate_shape(&expanded, 2).unwrap();
@@ -329,6 +342,13 @@ mod tests {
             expanded["consensus"][0]["sources"][0]["quote"],
             "Keep \"existing data\"."
         );
+        assert_eq!(expanded["consensus"][0]["sources"][1]["quote"], "Keep data");
+        map["consensus"][0]["sources"][1]["quote"] = serde_json::json!("existing data");
+        assert!(expand_citations(&map.to_string(), &prompt).is_err());
+        map["consensus"][0]["sources"][1]["quote"] = serde_json::json!("Keep data");
+        map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/answer");
+        assert!(expand_citations(&map.to_string(), &prompt).is_err());
+        map["consensus"][0]["sources"][1]["quote_path"] = serde_json::json!("/response");
         map["consensus"][0]["sources"][0]["participant"] = serde_json::json!("P3");
         assert!(expand_citations(&map.to_string(), &prompt).is_err());
     }
@@ -337,6 +357,10 @@ mod tests {
     fn sourced_mapping_supports_nonconsecutive_actual_participants_and_explicit_silence() {
         let (mapping, prompt) = fixture();
         validate_shape(&mapping.to_string(), 5).unwrap();
+        validate_sources(&mapping.to_string(), &prompt).unwrap();
+
+        let mut mapping = mapping;
+        mapping["excluded"][0]["basis"] = json!("without changing production");
         validate_sources(&mapping.to_string(), &prompt).unwrap();
     }
     #[test]
