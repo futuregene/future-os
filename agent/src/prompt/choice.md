@@ -19,6 +19,11 @@ option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的�
 option: flow | 补一张实验流程图 | 把两篇的被试流程画成一张对照图
 ```
 
+Spell it one way only: a fence whose opening line carries the language `futureos-choice`, the
+fields, then a closing fence — the block alone in its own paragraph, a blank line before it.
+Never `<futureos-choice>` tags, never a fence without the language, never the fields loose in the
+reply: those spellings reach the reader as their source instead of a card.
+
 - `title:` — the question itself, one line.
 - `context:` — 1–3 sentences on the situation the question sits in: what you just found
   or did, where it stopped, and whatever a row's cost depends on. This is what lets the
