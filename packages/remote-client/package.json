@@ -114,7 +114,7 @@
     "@types/node": "^26.6.5",
     "@typescript-eslint/parser": "^8.72.0",
     "@typescript-eslint/eslint-plugin": "^8.72.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.15.0",
     "typescript": "~6.0.3",
     "jest": "30.5.2",
     "@types/jest": "30.0.0",
@@ -124,6 +124,6 @@
     "@babel/plugin-transform-modules-commonjs": "^8.0.1",
     "sodium-javascript": "0.8.0",
     "fflate": "^0.8.3",
-    "noise-handshake": "4.2.0"
+    "noise-handshake": "4.2.1"
   }
 }
