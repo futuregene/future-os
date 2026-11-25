@@ -20,8 +20,8 @@
 
 TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
 
-桌面端使用 Tauri 2.12.5、`tauri-build` 2.7.4，以及根 `Cargo.lock` 锁定的
-稳定 2.x 插件。JavaScript API 与 CLI 为 2.12.4，dialog 绑定为 2.8.3，
+桌面端使用 Tauri 2.12.7、`tauri-build` 2.7.6，以及根 `Cargo.lock` 锁定的
+稳定 2.x 插件。JavaScript API 为 2.12.5，CLI 为 2.12.6，dialog 绑定为 2.8.4，
 由 `package-lock.json` 锁定。这些包独立编号。Tauri 2.12 要求 Rust 1.90
 或更新版本，并且不再官方支持 Windows 7。
 

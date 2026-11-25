@@ -25,9 +25,9 @@ Required on every platform for a full build (agent + TUI + CLI + GUI):
 
 The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
 
-The desktop uses Tauri 2.12.5, `tauri-build` 2.7.4, and the stable 2.x
-plugins locked in the root `Cargo.lock`. The JavaScript API and CLI are
-2.12.4, and the dialog bindings are 2.8.3, locked in `package-lock.json`.
+The desktop uses Tauri 2.12.7, `tauri-build` 2.7.6, and the stable 2.x
+plugins locked in the root `Cargo.lock`. The JavaScript API is 2.12.5,
+the CLI is 2.12.6, and the dialog bindings are 2.8.4, locked in `package-lock.json`.
 These packages have independent version numbers. Tauri 2.12 requires Rust
 1.90 or newer and no longer officially supports Windows 7.
 
