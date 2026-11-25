@@ -403,6 +403,12 @@ export function RemoteConversationView({
     // the same way a pushed message does.
     contentKey: rendered,
     followEnabled: !loading,
+    // The viewport is per conversation. This view is rendered for whichever
+    // remote conversation is open, and one of the frames it is drawn in (the vibe
+    // cell, a panel) can hand it another conversation without remounting it —
+    // where the previous transcript's scroll position and reading anchor would
+    // otherwise land the new one on a historical message.
+    resetKey: `${desktopId}:${sessionId}`,
     scrollRef,
   });
 
