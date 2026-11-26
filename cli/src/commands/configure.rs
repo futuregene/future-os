@@ -923,6 +923,16 @@ mod tests {
     use serde_json::Value;
     use std::collections::VecDeque;
 
+    /// How long a test may wait for the login hand-off to answer.
+    ///
+    /// A hang guard, not a latency assertion. What these tests pin is that the
+    /// hand-off fails *against the local fixture*, and they prove it by the
+    /// endpoint the returned error names — so the wall clock is free to be
+    /// generous. It was 5 s, which measured the runner instead: on 2026-11-25 a
+    /// loaded Windows runner took 26 s for the call that takes 2 s here, and
+    /// both tests failed with `Elapsed(())`.
+    const LOGIN_HANDOFF_BUDGET: std::time::Duration = std::time::Duration::from_secs(300);
+
     struct FakePrompter {
         answers: VecDeque<String>,
         secret_reads: usize,
@@ -1845,20 +1855,23 @@ mod tests {
 
         let mut prompt = FakePrompter::new(&[]);
         let (out, captured) = Output::memory();
-        // The hand-off must complete locally: the fixture's platform is
-        // unreachable, so the flow fails on its own rather than being cut off
-        // by this deadline. A timeout here would mean the login reached the
-        // network again — exactly the bug this guards, and one a bare
-        // `let _ = timeout(...)` would swallow silently.
-        let handoff = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            configure_futureos(&mut prompt, &out),
-        )
-        .await
-        .expect("the login hand-off must fail against the local fixture, not hang on the network");
+        // The hand-off must fail *against this fixture*: the platform it names
+        // is unreachable, so the flow fails on its own, and the error it returns
+        // names the endpoint it could not reach. That message is the claim, not
+        // the deadline — the deadline only keeps a hand-off that never returns
+        // from wedging the suite. A login that reached the real platform again
+        // (the bug this guards) either succeeds or names that platform instead,
+        // and both fail the assertions below.
+        let handoff =
+            tokio::time::timeout(LOGIN_HANDOFF_BUDGET, configure_futureos(&mut prompt, &out))
+                .await
+                .expect("the login hand-off must answer within its budget, not wedge the suite");
+        let Err(error) = handoff else {
+            panic!("an unreachable platform must fail the hand-off: {handoff:?}");
+        };
         assert!(
-            handoff.is_err(),
-            "an unreachable platform must fail the hand-off: {handoff:?}"
+            error.contains("127.0.0.1:1"),
+            "the hand-off must fail against the local fixture, not somewhere else: {error}"
         );
 
         let stdout = output_text(&captured.out);
@@ -1907,16 +1920,20 @@ mod tests {
         );
 
         // Accepting reaches the login hand-off (which fails against the
-        // fixture's local platform — completing locally, see the test above).
+        // fixture's local platform, and says so — see the test above).
         let mut prompt = FakePrompter::new(&["y"]);
         let (out, captured) = Output::memory();
-        let handoff = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            configure_futureos(&mut prompt, &out),
-        )
-        .await
-        .expect("the login hand-off must fail against the local fixture, not hang on the network");
-        assert!(handoff.is_err(), "port 1 refuses: {handoff:?}");
+        let handoff =
+            tokio::time::timeout(LOGIN_HANDOFF_BUDGET, configure_futureos(&mut prompt, &out))
+                .await
+                .expect("the login hand-off must answer within its budget, not wedge the suite");
+        let Err(error) = handoff else {
+            panic!("port 1 refuses, so the hand-off must fail: {handoff:?}");
+        };
+        assert!(
+            error.contains("127.0.0.1:1"),
+            "the hand-off must fail against the local fixture, not somewhere else: {error}"
+        );
         let stdout = output_text(&captured.out);
         assert!(stdout.contains("Log in again?"), "{stdout}");
         assert!(

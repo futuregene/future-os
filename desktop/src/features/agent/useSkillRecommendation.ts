@@ -35,7 +35,7 @@ import { useOperationLifetime } from "../../lib/useOperationLifetime";
 
 /** Below this many UTF-8 bytes the draft is too short to mean anything (10 汉字). */
 export const MIN_QUERY_BYTES = 30;
-/** Don't recommend for very long drafts (also keeps the Jev prompt small). */
+/** Don't recommend for very long drafts (also keeps the decider prompt small). */
 export const MAX_QUERY_CHARS = 2000;
 /** Recommendations shown per user per local day in a formal release build. */
 export const DAILY_RECOMMENDATION_LIMIT = 3;

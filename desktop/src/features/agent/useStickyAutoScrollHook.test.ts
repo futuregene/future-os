@@ -97,4 +97,51 @@ describe("useStickyAutoScroll", () => {
     hook.unmount();
     container.remove();
   });
+
+  it("follows the newest message again when the conversation changes under one container", () => {
+    // isolation: a caller can swap the transcript without remounting the view
+    // (the remote view is drawn for whichever conversation is open, and some of
+    // its frames reuse the instance). Stickiness and the reading anchor are refs,
+    // so without `resetKey` the previous conversation's anchor outlives the
+    // messages it names, `settleViewport` finds no target and keeps the current
+    // position — which is how a long conversation opens on a historical message.
+    const container = document.createElement("div");
+    document.body.append(container);
+    const first = document.createElement("div");
+    first.dataset.messageId = "first";
+    container.append(first);
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 200 });
+    Object.defineProperty(container, "scrollHeight", { configurable: true, value: 1_000 });
+    const scrollRef = { current: container as HTMLElement | null };
+    let resetKey = "desktop_a::sess_1";
+    let contentKey: unknown = "first";
+    const hook = renderHook(() => useStickyAutoScroll({ scrollRef, contentKey, resetKey }));
+
+    // The reader scrolled up in the first conversation to read history.
+    container.scrollTop = 300;
+    act(() => hook.current.preserveViewport());
+
+    // The same container now draws another conversation, whose rows carry other
+    // ids than the one the reader was anchored to.
+    first.remove();
+    const second = document.createElement("div");
+    second.dataset.messageId = "second";
+    container.append(second);
+    resetKey = "desktop_a::sess_2";
+    contentKey = "second";
+    hook.rerender();
+
+    expect(container.scrollTop).toBe(1_000);
+
+    // The same key, though, is the same conversation: a reader who scrolled up
+    // there is not dragged to the bottom by an ordinary content change.
+    container.scrollTop = 300;
+    act(() => hook.current.preserveViewport());
+    contentKey = "second-more";
+    hook.rerender();
+    expect(container.scrollTop).toBe(300);
+
+    hook.unmount();
+    container.remove();
+  });
 });

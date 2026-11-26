@@ -1237,6 +1237,16 @@ mod tests {
         assert!(prompt.contains("\n```futureos-choice\n"));
         assert_eq!(prompt.matches("# Offering Choices").count(), 1);
 
+        // The opening spelling, stated as a rule: three replies from one model
+        // wrote the tag form for the card while quoting the fence form correctly
+        // in their prose (2026-11-24, 2026-11-25), so the example alone is not
+        // enough — the ways it must *not* be spelled are named.
+        assert!(prompt.contains("Spell it one way only"));
+        assert!(prompt.contains("Never `<futureos-choice>` tags"));
+        assert!(prompt.contains("never a fence without the language"));
+        assert!(prompt.contains("never the fields loose in the"));
+        assert!(prompt.contains("a blank line before it"));
+
         // The option line's shape: repeated `option:` rows of
         // `<id> | <label> | <note>`, in a real three-field example.
         let option = "option: forest | 重画森林图 | 按 Dreher 2025 的样本量重算两篇的置信区间";
@@ -1352,8 +1362,11 @@ mod tests {
         // for the row-count bound: a card the client refuses costs the reply its
         // whole question, so the sentence had to name the bound the *reader*
         // sees (six, not the four the model is asked for) and say what a wrong
-        // count looks like — fenced source in the middle of the answer.
-        assert!(include_str!("choice.md").lines().count() <= 53);
+        // count looks like — fenced source in the middle of the answer. Raised to
+        // 58 (2026-11-25) for the spelling rule: the example had stopped being
+        // enough after three live replies wrote the card some other way, and a
+        // card the reader cannot see costs the reply its whole question.
+        assert!(include_str!("choice.md").lines().count() <= 58);
     }
 
     /// The switch's second half: with cards off the section is not in the

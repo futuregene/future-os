@@ -1,6 +1,6 @@
-# Jev 技能推荐 demo
+# 技能推荐 demo（`decider` 路由）
 
-一边打字一边推荐技能：输入问题，用 TypeSafe Jev（System One 模型，`POST /v1/systemone`）
+一边打字一边推荐技能：输入问题，用 `decider` 路由（System One 决策模型，`POST /v1/systemone`）
 **一次调用**，从 `skills/` 子模块的**全部 141 个技能**（15 内置 + 126 第三方）里挑出最合适的那个，
 或者明确判定"没有合适的技能"。带 100 道题的评测：**[evaluation.md](evaluation.md)**。
 
@@ -25,7 +25,7 @@ node server.mjs                                   # 默认 http://127.0.0.1:8787
 roster: 141 skills (builtin 15 + third-party 126) from .../skills
 ```
 
-**凭据就是 Future 账号本身的 key，没有单独的 Jev key。** 推荐走平台网关
+**凭据就是 Future 账号本身的 key，没有单独的 decider key。** 推荐走平台网关
 `{future_base_url}/v1/systemone`（当前 `https://future-os.cn/api`），鉴权用「已登录的 Future
 账号」——也就是说**登录过就有，不用配**。
 
@@ -40,13 +40,13 @@ roster: 141 skills (builtin 15 + third-party 126) from .../skills
 - **`.gitignore` 已挡住运行产物**：`runs/` 是评测过程的逐题缓存（含接口返回内容），不进仓库。
 
 没有凭据也能把界面点起来：既没有 `auth.json` 里的 `future` 项、也没有 `FUTURE_API_KEY`
-时，服务会退回**本地 BM25 启发式排序**（页面会显著标注"本地回退"，那不是 Jev 的结果），
+时，服务会退回**本地 BM25 启发式排序**（页面会显著标注"本地回退"，那不是网关的结果），
 只用来看 UI 和接口形状。
 
 其他参数（都有同名环境变量）：`--port` / `PORT`、`--skills` / `SKILLS_ROOT`、
-`FUTURE_BASE_URL` / `FUTURE_MODEL`（默认跟随账号的 `base_url`，模型为 `jev`）、
+`FUTURE_BASE_URL` / `FUTURE_MODEL`（默认跟随账号的 `base_url`，模型为 `decider`——后端无关的别名，由网关解析到当前部署的模型）、
 `LOCAL_ONLY=1`（强制本地回退）、
-`NONE_GATE_THRESHOLD=0.15`、`CHUNK_SIZE=254`、`SHORTLIST=3`、
+`NONE_GATE_THRESHOLD=0.15`（Jev）/ `NONE_GATE_THRESHOLD_DECIDER=0.015`（decider）、`CHUNK_SIZE=254`、`SHORTLIST=3`、
 `MIN_QUERY_CHARS=6`。
 
 `SHORTLIST` **不参与判定**（判定只看"第 1 名 + none 概率"）：它只决定 API 返回给界面的候选条数，
@@ -61,7 +61,7 @@ FUTURE_API_KEY=你的key node probe.mjs "把这个 PDF 的表格抽成 markdown"
 ```
 
 浏览器里：输入 ≥ 6 个字符开始推荐；停顿后自动发起那次调用（也可 ⌘/Ctrl+Enter 立即触发）。
-右上角徽标显示当前后端，`本地回退` 表示没走 Jev。底部三个 tab：候选 / 全部排名 /
+右上角徽标显示当前后端，`本地回退` 表示没走网关。底部三个 tab：候选 / 全部排名 /
 调用详情（真实请求 JSON 与 usage）。
 
 ## 它怎么工作
@@ -110,7 +110,7 @@ description。要补回来只有把第二次调用加回去这一条路。
 但 Choice 只要**约一半的 token**（8.8k vs 21.4k/题）——noul 必须把"问题模板 + criteria"
 重复 141 遍，Choice 只写一次。
 
-**为什么 Choice 里必须有 `none_of_these`**：这是关键。Jev 不会说"都不合适"，而一个不含
+**为什么 Choice 里必须有 `none_of_these`**：这是关键。模型不会说"都不合适"，而一个不含
 none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另问一道"需不需要技能"来当门控，
 结果造成 8–9 道误拒（首答正确掉到 84.6%）。把"都不合适"做成**选项**、让它在同一个问题上和
 真候选同台竞争之后，拒答变得干脆（误拒 0），质量回到 95%+。
@@ -132,7 +132,7 @@ none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另
 255 通过、256 被拒（`400 Too many choices. Must have at most 255 choices.`）。所以每块
 **技能数上限是 254**，不是 255。
 
-**拒答为什么是阈值**：Jev 只输出概率，所以"该不该推荐"必须由调用方决定。做成显式阈值的
+**拒答为什么是阈值**：模型只输出概率，所以"该不该推荐"必须由调用方决定。做成显式阈值的
 好处是可解释（界面直接显示"none 概率 0.71 ≥ 0.15，所以拒答"）且可调。
 这个阈值是个很宽的平原：0.1–0.9 的结果几乎一样，因为该拒的题 none 概率在 0.9 以上、
 该推荐的接近 0，中间是空的。
@@ -178,10 +178,10 @@ none 的 Choice **必须**指认一个赢家。早先没有 none 时，只能另
 scripts/skill_reco/
 ├── server.mjs        本地 HTTP 服务：静态页 + /api/suggest（key 只留在这个进程里）
 ├── roster.mjs        从 skills/builtin + skills/third-party 读 SKILL.md，拼出技能目录
-├── suggest.mjs       一次 Choice + 一个门控阈值（Jev 与本地回退共用同一套判定）
+├── suggest.mjs       一次 Choice + 一个门控阈值（网关与本地回退共用同一套判定）
 │                     模块里只有服务路径：被移除的那次调用已移到 bench/second-call.mjs
 ├── jev.mjs           System One HTTP 客户端（凭据取自 Future 账号；429/529 退避重试）
-├── localRank.mjs     key 不可用时的 BM25 字面回退（明确标注，不是 Jev）
+├── localRank.mjs     key 不可用时的 BM25 字面回退（明确标注，不是网关）
 ├── probe.mjs         命令行：验证 key + 跑一遍完整流程
 ├── public/           前端页面（无构建、无依赖）
 ├── bench/second-call.mjs  被移除的那次调用（只为让评测可复现，服务路径不引用）
@@ -235,8 +235,8 @@ python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
 |---|---|---|---|
 | 端点 | `{账号 base_url}/v1/systemone` | 同 | 一致 |
 | 凭据 | `auth.json` 的 `future` 项 | 同 | 一致 |
-| 模型 | `jev` | 同 | 一致 |
-| 门控阈值 | 0.15 | 0.15 | 一致 |
+| 模型 | `decider`（网关解析到部署模型） | 同 | 一致 |
+| 门控阈值 | 0.15（Jev）/ 0.015（decider） | 同 | 一致 |
 | 候选上限 / 描述长度 | 254 / 220 | 254 / 220 | 一致 |
 | none 选项文案 | 逐字相同 | 逐字相同 | 一致 |
 | `instructions` | 逐字相同的字符串 | 同 | 一致 |

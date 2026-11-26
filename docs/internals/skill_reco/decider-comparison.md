@@ -7,15 +7,16 @@ still producing the numbers the report published". This page records that check,
 check has to freeze, the command a new model is run with, and — since 2026-11-09 — what the
 second model actually measured.
 
-**Result in one paragraph**: on the test deployment, `pplx-decider-v1.2` and Jev both answer
-93 of 100 questions correctly, and the questions they get wrong are almost disjoint — decider is
-3 questions better at picking the skill and 4 questions worse at refusing. That is not a
-difference the set can turn into a decision either way. What does decide it is latency: decider's
-cost is per input token — ~0.6 ms per token, so the evaluation's 142 options (their text is ~8.7k
-tokens) cost 3.5–3.8 s and the 241 options the agent would send today cost 6.5 s, against a 2.5 s
-serving-path deadline (§6) — so as things stand every recommendation card would time out, and it
-would get slower as the catalogue grows. **This is not a model swap until the latency is dealt
-with**, and no accuracy number here argues for one.
+**Result in one paragraph**: when this comparison was first made (2026-11-09), `pplx-decider-v1.2`
+and Jev both answered 93 of 100 questions correctly with almost disjoint mistakes, but decider cost
+~0.6 ms per input token — 3.5–3.8 s for the evaluation's 142 options and 6.5 s for the 241 options
+the agent sends today, against a 2.5 s serving deadline (§6) — so it was not a usable swap. The
+route has since been upgraded: on **2026-11-25** the same 100 questions score **95.0% agreement /
+95.4% top-1** (Jev, measured in the same sitting: 93.0 / 90.8) at **629 ms** for the frozen
+141-option roster and **~1.1 s** for the live 240-skill catalogue, ~0.09 ms per input token (§8).
+The latency objection is gone; decider is now both more accurate and roughly seven times faster.
+One caveat: the gateway still labels its answer `pplx-decider-v1.2`, so these numbers describe the
+deployed route, not the label in the response.
 
 ## 1. Harness validation, 2026-11-02
 
@@ -274,6 +275,9 @@ changed* matters more than the fact that it works.
 
 ## 6. What stands between the two models is latency, not accuracy
 
+> **Superseded 2026-11-25.** The slope measured below (~0.61 ms/token) is what the route cost
+> before the upgrade; §8 re-measures the same path at ~0.09 ms/token, inside the deadline.
+
 ### 6.1 A correction to this section's first version
 
 The first version of this section, written earlier on 2026-11-09, said decider's latency was a
@@ -428,3 +432,64 @@ Until one of those happens, decider's accuracy is a number about a latency the p
   describe the test deployment; only tokens and decisions travel.
 - The gate experiment in §4.2 is fitted on the evaluation set; it is reported as a hypothesis and
   must not be turned into a shipped constant before a held-out check.
+
+## 8. Re-run after the route moved to Perplexity 1.3, 2026-11-25
+
+The `decider` route now serves a newer backend than the one §4 measured. The gateway still labels
+the answer `pplx-decider-v1.2` in `model`, but every behavioural number moved: on the same frozen
+141-skill set the median dropped from 3,581 ms to 629 ms, and the slope from ~0.61 ms per input
+token to ~0.09 ms. The deployment's designation is Perplexity's 1.3 generation behind the alias;
+the response's `model` field is the alias's original label, so the numbers below describe what the
+route served on 2026-11-25 rather than a version string.
+
+Method is §3 unchanged, on the public gateway (`https://future-os.cn/api`, the account's
+`base_url`), sequential, both models in the same sitting so latency is comparable:
+
+```bash
+node bench/decider-run.mjs run decider-20261125 --model decider
+node bench/decider-run.mjs run jev-20261125 --model jev
+node bench/decider-run.mjs compare jev-20261125 decider-20261125
+```
+
+| metric | Jev (`jev-1.13`) | `decider` 2026-11-25 | `decider` 2026-11-09 (§4) |
+|---|---|---|---|
+| decision agreement (n=100) | 93.0% | **95.0%** | 93.0% |
+| top-1 correct (n=65) | 90.8% | **95.4%** | 95.4% |
+| top-1 in reference set (n=65) | 93.8% | **96.9%** | 96.9% |
+| correct refusal (n=35) | **97.1%** | 94.3% | 88.6% |
+| false refusal (n=65) | 1.5% | 0% | 0% |
+| top-1 = the question's source skill (n=65) | 93.8% | **98.5%** | 98.5% |
+| input tokens, median per question | 8,749 | 7,175 | 7,188 |
+| latency, median / p90 | 912 / 1,036 ms | **629 / 649 ms** | 3,581 / 3,650 ms |
+
+The paired flips are 6 questions: decider fixes p019, p028, p042 and p043 (four gold answers) and
+breaks p041 and n026. n026 ("what does the BRCA1 protein do") is a false suggestion
+(`future-database-lookup`, `none` 0.0062); p037 (`matlab`, `none` 0.0071) is the other refusable
+question it answers. Both sit below the 0.015 gate, hence 33/35 correct refusals. On the answerable
+side the largest `none` is 0.0071, so this set no longer has an empty band around the gate either:
+0.005 would falsely refuse that answerable question, 0.015 recommends the two refusable ones, and
+no cut gets 100% — the answerable 0.0071 and refusable p037 are the same number. §4.2's conclusion
+therefore stands: a 240-question gold pass is what settles the gate.
+
+### 8.1 The shipped 240-skill catalogue now fits the deadline
+
+Reading `skills/` through the shipped `loadRoster` gives **240 skills** (17 builtin + 223
+third-party) = 241 options, one Choice, no split. Three sequential calls through
+`Suggester.rank`:
+
+| model | input tokens | latency | answer |
+|---|---|---|---|
+| `decider` (2026-11-25) | 12,462–12,465 | 1,075 / 1,084 / 1,223 ms | `future-image` / `future-paper` / `sympy` |
+| `decider` (2026-11-09, §6.3) | 12,479 | 6,441 / 6,467 / 6,596 ms | `scanpy` |
+
+The cost is still per input token (0.088–0.091 ms/token on both payloads), but the constant is
+~7× smaller. At 241 options the call takes ~1.1 s, inside the 2.5 s `TIMEOUT`, and the margin
+improves rather than shrinks as the catalogue grows. §6.4's table is history: the route that made
+every card time out no longer does.
+
+**What this changes in the product decision**: the accuracy objection of §4 was already a draw;
+the latency objection of §6 is gone. Both automatic approval and skill recommendation now ask the
+same backend-neutral `decider` route, so a server-side model upgrade reaches the recommender
+without a client release. The remaining caveats are the frozen roster (quality is scored on 141
+skills with gold; the 240-skill catalogue has latency but no gold) and the gate, which still awaits
+its held-out pass.

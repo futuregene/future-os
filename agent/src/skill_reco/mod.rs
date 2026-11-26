@@ -1,20 +1,21 @@
-//! Jev-based skill recommendation.
+//! Skill recommendation over the gateway's `decider` route.
 //!
 //! The agent exposes one RPC (`suggest_skill`) that, given the user's message
-//! and a set of UNINSTALLED skill candidates, asks Jev which single skill — if
+//! and a set of UNINSTALLED skill candidates, asks the decision model which single skill — if
 //! any — best matches. All trigger logic (any turn, length caps, login/balance,
 //! daily budget, "user already picked a skill") lives in the calling client;
-//! this module only performs the Jev call and the refusal gate.
+//! this module only performs the decider call and the refusal gate.
 //!
-//! **Endpoint**: Jev is served through the Future account's own gateway,
+//! **Endpoint**: the decision model is served through the Future account's own gateway,
 //! `{future_base_url}/v1/systemone` (`https://future-os.cn/api` +
 //! `/v1/systemone`), authenticated with the Future provider credential in
-//! `auth.json` and billed to that account. There is no separate Jev
-//! credential. The gateway's request shape differs from TypeSafe's public API
-//! (see [`build_request`]).
+//! `auth.json` and billed to that account. There is no separate decider
+//! credential. The gateway's request shape differs from the upstream System One
+//! public API (see [`build_request`]).
 //!
-//! Design constraints measured during the offline evaluation:
-//! - Jev never self-refuses, so refusal is the caller's job: we add a
+//! Design constraints measured during the offline evaluation (against Jev, the
+//! model this pipeline was first built and scored on):
+//! - The model never self-refuses, so refusal is the caller's job: we add a
 //!   `none_of_these` option and treat "its probability >= gate" as "no
 //!   recommendation".
 //! - A single Choice over the candidates is enough; the two-call verify
@@ -25,13 +26,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Refusal gate: `none_of_these` probability at or above this means "no
-/// recommendation" (caller-side, because Jev never self-refuses).
+/// recommendation" (caller-side, because the model never self-refuses).
 const NONE_GATE_THRESHOLD: f64 = 0.15;
-/// Refusal gate for the decider family. At 141 options its answerable and
-/// refusable groups separated at 0.005; on the live 240-skill catalogue they
+/// Refusal gate for the decider family. The 2026-11-09 evaluation separated
+/// its two groups at 0.005 on 141 options; on the live 240-skill catalogue they
 /// overlap, and 0.015 is the balanced cut it produced there (0 false refusals,
-/// 1 false suggestion, 96.0% agreement — `docs/internals/skill_reco/decider-comparison.md`
-/// §4.2). The value still awaits a 240-question gold pass.
+/// 1 false suggestion, 96.0% agreement —
+/// `docs/internals/skill_reco/decider-comparison.md` §4.2). The 2026-11-25
+/// re-run on 141 options at 0.015 scored 0 false refusals and 2 false
+/// suggestions; no cut separates that set (an answerable and a refusable
+/// question share 0.0071). A 240-question gold pass still settles the value.
 const NONE_GATE_THRESHOLD_DECIDER: f64 = 0.015;
 
 /// The refusal gate belongs to the model, not to the pipeline: the same
@@ -62,8 +66,11 @@ const MAX_CANDIDATES: usize = 254;
 /// two more seconds for a reply nobody could use. Ending it here instead means
 /// every caller gets a real outcome inside its budget (a failure is *decided* at
 /// 2.5 s rather than abandoned at 3 s) and no call outlives the client that
-/// asked for it. The measured p95 is ≈1.4 s
-/// (`docs/internals/skill_reco/evaluation.md`), so the tail still fits.
+/// asked for it. The measured p95 was ≈1.4 s on the model this pipeline was
+/// first scored with (`docs/internals/skill_reco/evaluation.md`); the `decider`
+/// route now answers the live 240-skill catalogue in ≈1.1 s median
+/// (`docs/internals/skill_reco/decider-comparison.md` §8), so the tail fits
+/// with more room than this budget was chosen for.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2500);
 /// How long a failing recommender is left alone before it is asked again.
 ///
@@ -77,7 +84,7 @@ const UNAVAILABLE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 /// How many [`FailureKind::Transient`] failures in a row mean "the recommender is
 /// down" rather than "that one call was unlucky".
 const FAILURE_STREAK_TO_OPEN: u32 = 2;
-/// The Jev option text is `name + " " + description`, truncated to this many
+/// The option text the model sees: `name + " " + description`, truncated to this many
 /// chars (the measured knee: shorter loses answers, longer buys nothing).
 const DESC_CHARS: usize = 220;
 
@@ -85,7 +92,7 @@ const NONE_OPTION: &str = "none_of_these";
 
 use crate::system_one::{endpoint, Endpoint, SKILL_RECO_MODEL};
 
-/// One skill candidate offered to Jev (also the recommendation shape).
+/// One skill candidate offered to the decision model (also the recommendation shape).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillCandidate {
     pub name: String,
@@ -157,7 +164,7 @@ impl FailureKind {
 struct Attempt {
     /// Token counts and the charged amount, when the response carried `usage`.
     /// For a split catalogue this is the sum over the calls actually made.
-    usage: Option<JevUsage>,
+    usage: Option<DecisionUsage>,
     /// The backend that answered (`typesafe/jev-1.13-…`), when reported.
     served_by: Option<String>,
     /// How many candidates this request carried and how they were split.
@@ -224,15 +231,15 @@ impl Attempt {
     }
 }
 
-/// Input/output token counts Jev reports for one call (used to price it).
+/// Input/output token counts the gateway reports for one call (used to price it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
-struct JevUsage {
+struct DecisionUsage {
     #[serde(default)]
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
     /// What the provider charged for this call, in USD. The gateway reports it,
-    /// which beats estimating from a price list — Jev's rate changes upstream.
+    /// which beats estimating from a price list — the upstream rate changes.
     #[serde(default)]
     cost: Option<f64>,
 }
@@ -368,7 +375,7 @@ pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<Skill
 }
 
 /// Runs one attempt and reports how it ended, with the token usage when the
-/// call actually reached Jev.
+/// call actually reached the gateway.
 fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
     let Some(mut endpoint) = endpoint() else {
         // Deliberately not memoized: no credential means no call either way, so
@@ -475,7 +482,7 @@ fn one_call(
     };
     let status = response.status();
     if !status.is_success() {
-        // The body carries Jev's own error (e.g. an invalid key), which is the
+        // The body carries the gateway's own error (e.g. an invalid key), which is the
         // single most useful thing to log for a 4xx. Truncated: it is an
         // upstream payload, not something this code controls.
         let body = response.text().unwrap_or_default();
@@ -490,7 +497,7 @@ fn one_call(
             Attempt::default(),
         );
     }
-    let body: JevResponse = match response.json() {
+    let body: DecisionResponse = match response.json() {
         Ok(body) => body,
         Err(error) => {
             return (
@@ -679,7 +686,7 @@ fn status_kind(status: u16) -> FailureKind {
 }
 
 /// Apply the refusal gate and pick the top-1 skill, as an [`Outcome`].
-fn decide(body: &JevResponse, candidates: &[SkillCandidate], model: &str) -> Outcome {
+fn decide(body: &DecisionResponse, candidates: &[SkillCandidate], model: &str) -> Outcome {
     let Some(probabilities) = body
         .answers
         .get("chunk_0")
@@ -721,12 +728,12 @@ fn decide(body: &JevResponse, candidates: &[SkillCandidate], model: &str) -> Out
     }
 }
 
-/// Price one call at the published rate. Output tokens are free on Jev, so this
+/// Price one call at the published rate. Output tokens are free on the route, so this
 /// is input-only; the rate is the documented $0.042/Mtok.
 const USD_PER_MTOK_INPUT: f64 = 0.042;
 const USD_TO_CNY: f64 = 7.2;
 
-fn cost_cny(usage: JevUsage) -> f64 {
+fn cost_cny(usage: DecisionUsage) -> f64 {
     // The gateway's own figure wins: it is what was actually charged, and it
     // stays right if the upstream price moves. The rate below is the documented
     // fallback for a response that omits `cost`.
@@ -866,7 +873,7 @@ fn build_request(query: &str, candidates: &[SkillCandidate], model: &str) -> ser
     })
 }
 
-/// The option text Jev sees: name plus a one-line, length-capped description.
+/// The option text the model sees: name plus a one-line, length-capped description.
 fn option_text(c: &SkillCandidate) -> String {
     let desc: String = c
         .description
@@ -877,13 +884,13 @@ fn option_text(c: &SkillCandidate) -> String {
     format!("{} {}", c.name, truncated)
 }
 
-/// Apply the refusal gate and pick the top-1 skill from a Jev response.
+/// Apply the refusal gate and pick the top-1 skill from a gateway response.
 ///
 /// Kept as the plain "what should we show" view over [`decide`]; the tests use
 /// it, and `suggest_skill` needs the reasoning too, so both go through `decide`.
 #[cfg(test)]
 fn pick_from_response(
-    body: &JevResponse,
+    body: &DecisionResponse,
     candidates: &[SkillCandidate],
     model: &str,
 ) -> Option<SkillCandidate> {
@@ -893,15 +900,15 @@ fn pick_from_response(
     }
 }
 
-// ── Jev response decoding ───────────────────────────────────────────────────
+// ── Gateway response decoding ───────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-struct JevResponse {
+struct DecisionResponse {
     #[serde(default)]
-    answers: std::collections::HashMap<String, JevAnswer>,
+    answers: std::collections::HashMap<String, DecisionAnswer>,
     /// Token counts for this call; absent on a response that omits `usage`.
     #[serde(default)]
-    usage: Option<JevUsage>,
+    usage: Option<DecisionUsage>,
     /// The backend that answered, as the gateway names it
     /// (`typesafe/jev-1.13-20260917`).
     #[serde(default)]
@@ -909,7 +916,7 @@ struct JevResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct JevAnswer {
+struct DecisionAnswer {
     #[serde(default)]
     probabilities: Option<std::collections::HashMap<String, f64>>,
 }
@@ -926,15 +933,15 @@ mod tests {
         }
     }
 
-    fn response_with(probs: &[(&str, f64)]) -> JevResponse {
+    fn response_with(probs: &[(&str, f64)]) -> DecisionResponse {
         let mut map = std::collections::HashMap::new();
         map.insert(
             "chunk_0".to_string(),
-            JevAnswer {
+            DecisionAnswer {
                 probabilities: Some(probs.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
             },
         );
-        JevResponse {
+        DecisionResponse {
             answers: map,
             usage: None,
             model: None,
@@ -985,7 +992,7 @@ mod tests {
         // No chunk_0 at all.
         assert!(matches!(
             decide(
-                &JevResponse {
+                &DecisionResponse {
                     answers: std::collections::HashMap::new(),
                     usage: None,
                     model: None,
@@ -1043,7 +1050,7 @@ mod tests {
             .finish();
 
         let attempt = Attempt {
-            usage: Some(JevUsage {
+            usage: Some(DecisionUsage {
                 input_tokens: 8_800,
                 output_tokens: 20,
                 cost: None,
@@ -1194,7 +1201,7 @@ mod tests {
     fn prices_a_call_from_its_input_tokens_when_the_gateway_omits_the_cost() {
         // 8.8k input tokens is the measured shape of a 141-skill catalogue:
         // about 2.7 厘 (0.0027 CNY) at $0.042/Mtok.
-        let cost = cost_cny(JevUsage {
+        let cost = cost_cny(DecisionUsage {
             input_tokens: 8_800,
             output_tokens: 20,
             cost: None,
@@ -1207,7 +1214,7 @@ mod tests {
         // Output tokens are free, so they must not change the price.
         assert_eq!(
             cost,
-            cost_cny(JevUsage {
+            cost_cny(DecisionUsage {
                 input_tokens: 8_800,
                 output_tokens: 0,
                 cost: None,
@@ -1222,7 +1229,7 @@ mod tests {
         // A live gateway response: 447 in / 54 out charged $1.8774e-05, exactly
         // the input-only rate. The log must show ~0.000135 CNY — the 0.01-厘
         // step this replaced would have printed 0.0001, a quarter of the price.
-        let reported = cost_cny(JevUsage {
+        let reported = cost_cny(DecisionUsage {
             input_tokens: 447,
             output_tokens: 54,
             cost: Some(1.8774e-05),
@@ -1231,7 +1238,7 @@ mod tests {
 
         // A cost that disagrees with the rate must be believed, not averaged:
         // this is the number the provider billed.
-        let billed = cost_cny(JevUsage {
+        let billed = cost_cny(DecisionUsage {
             input_tokens: 8_800,
             output_tokens: 0,
             cost: Some(0.5),
@@ -1280,7 +1287,7 @@ mod tests {
             Outcome::Recommended { .. }
         ));
         assert_eq!(
-            decide(&body, &cands, "pplx-decider-v1.2"),
+            decide(&body, &cands, "decider"),
             Outcome::Refused {
                 none_probability: 0.02
             }
@@ -1288,10 +1295,13 @@ mod tests {
         // Below both gates, decider still recommends.
         let low = response_with(&[("future-web", 0.99), (NONE_OPTION, 0.01)]);
         assert!(matches!(
-            decide(&low, &cands, "pplx-decider-v1.2"),
+            decide(&low, &cands, "decider"),
             Outcome::Recommended { .. }
         ));
         assert_eq!(none_gate("typesafe/jev-1.13-20260917"), NONE_GATE_THRESHOLD);
+        // The route alias and every backend id in the decider family share the
+        // decider gate.
+        assert_eq!(none_gate("decider"), NONE_GATE_THRESHOLD_DECIDER);
         assert_eq!(
             none_gate("pplx-decider-flash-v1.2"),
             NONE_GATE_THRESHOLD_DECIDER
@@ -1301,7 +1311,7 @@ mod tests {
     #[test]
     fn missing_probabilities_returns_none() {
         let cands = vec![cand("future-web")];
-        let body = JevResponse {
+        let body = DecisionResponse {
             answers: std::collections::HashMap::new(),
             usage: None,
             model: None,
@@ -1328,7 +1338,7 @@ mod tests {
     #[test]
     fn build_request_matches_the_gateway_shape() {
         let cands = vec![cand("a"), cand("b")];
-        let req = build_request("hello", &cands, "pplx-decider-v1.2");
+        let req = build_request("hello", &cands, "decider");
         let question = &req["questions"]["chunk_0"];
         let opts = &question["criteria"];
         assert!(
@@ -1359,7 +1369,7 @@ mod tests {
             "dropping this collapsed refusal in the evaluation: {instructions}"
         );
         assert_eq!(req["state"]["request"], serde_json::json!("hello"));
-        assert_eq!(req["model"], serde_json::json!("pplx-decider-v1.2"));
+        assert_eq!(req["model"], serde_json::json!("decider"));
     }
 
     #[test]
@@ -1371,7 +1381,7 @@ mod tests {
     // ── Transport outcomes, driven against a local socket ──────────────────
     //
     // The live gateway cannot be part of a test: these five outcomes (a 2xx, a
-    // 4xx carrying Jev's own error, a body that does not decode, a refused
+    // 4xx carrying the gateway's own error, a body that does not decode, a refused
     // connection, a silent peer) are what an operator has to tell apart in the
     // log, and each is decided by a branch in `attempt_call`.
 
@@ -1604,7 +1614,7 @@ mod tests {
     fn gateway_response(pick: &str) -> String {
         let mut probabilities = serde_json::Map::new();
         probabilities.insert(pick.to_string(), serde_json::json!(0.9));
-        // Below both gates (Jev 0.15, decider 0.005): this fixture is the
+        // Below both gates (Jev 0.15, decider 0.015): this fixture is the
         // "answered with a skill" shape.
         probabilities.insert(NONE_OPTION.to_string(), serde_json::json!(0.001));
         serde_json::json!({
@@ -1655,7 +1665,7 @@ mod tests {
             "the account credential must authenticate the call: {head}"
         );
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(body["model"], serde_json::json!("pplx-decider-v1.2"));
+        assert_eq!(body["model"], serde_json::json!("decider"));
         assert_eq!(
             body["state"]["request"],
             serde_json::json!("帮我把这张照片转成水彩风格")
@@ -1666,7 +1676,7 @@ mod tests {
         );
     }
 
-    /// Jev's own error text is the most useful thing in a 4xx, and it is an
+    /// The gateway's own error text is the most useful thing in a 4xx, and it is an
     /// upstream payload: trimmed of surrounding whitespace and capped at 300
     /// display columns so one bad gateway cannot flood the log.
     #[test]
@@ -1686,7 +1696,7 @@ mod tests {
             },
             "a day of log lines must not be one gateway error"
         );
-        assert_eq!(attempt.usage, None, "a 402 never reached Jev");
+        assert_eq!(attempt.usage, None, "a 402 never reached the model");
         assert_eq!(attempt.served_by, None);
         // The request's shape is still reported on a failed call: that is what
         // makes "the gateway refused it" and "we sent something odd"
@@ -2010,7 +2020,7 @@ mod tests {
                 none_probability: 0.02,
             },
             attempt: Attempt {
-                usage: Some(JevUsage {
+                usage: Some(DecisionUsage {
                     input_tokens: tokens,
                     output_tokens: 1,
                     cost: Some(0.000_001),

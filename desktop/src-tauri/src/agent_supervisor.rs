@@ -444,28 +444,59 @@ pub enum QuitDecision {
     Proceed,
     Confirm { open_dialog: bool },
 }
-pub(crate) fn active_work_count() -> Result<usize, crate::AppError> {
-    if matches!(
-        crate::agent_host::host().phase(),
-        crate::agent_host::Phase::Stopped
-    ) {
-        return Ok(0);
+/// The work the quit decision counted, split the way the confirmation dialog
+/// has to say it apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ActiveWork {
+    /// Sessions with a run in flight — what "still generating a reply" means.
+    streaming: usize,
+    /// Everything else the Agent counts as work: queued runs, an approval
+    /// waiting, compaction, in-flight commands, background tasks.
+    other: usize,
+}
+
+impl ActiveWork {
+    fn total(self) -> usize {
+        self.streaming + self.other
     }
-    if matches!(
-        crate::agent_host::host().phase(),
-        crate::agent_host::Phase::Starting
-    ) {
-        return Err("Agent is still starting".into());
-    }
-    match crate::agent_host::host().activity()? {
-        Some(activity) => Ok(activity.running
-            + activity.queued
+}
+
+/// The one mapping from an activity snapshot to the two counts. Separate from
+/// the host read so the split itself is testable, and so the total cannot drift
+/// from what the quit decision already counted.
+fn split_activity(activity: &future_agent::service::AgentActivity) -> ActiveWork {
+    ActiveWork {
+        streaming: activity.running,
+        other: activity.queued
             + activity.approvals
             + activity.compactions
             + activity.commands
-            + activity.background),
-        None => Ok(crate::desktop_shutdown::owned_count()),
+            + activity.background,
     }
+}
+
+fn active_work() -> Result<ActiveWork, crate::AppError> {
+    let phase = crate::agent_host::host().phase();
+    if matches!(phase, crate::agent_host::Phase::Stopped) {
+        return Ok(ActiveWork::default());
+    }
+    if matches!(phase, crate::agent_host::Phase::Starting) {
+        return Err("Agent is still starting".into());
+    }
+    match crate::agent_host::host().activity()? {
+        Some(activity) => Ok(split_activity(&activity)),
+        // An attached Agent keeps its own work; only the runs this Desktop
+        // submitted are ours to interrupt, and each of those is a conversation
+        // still waiting on this Desktop's reply.
+        None => Ok(ActiveWork {
+            streaming: crate::desktop_shutdown::owned_count(),
+            other: 0,
+        }),
+    }
+}
+
+pub(crate) fn active_work_count() -> Result<usize, crate::AppError> {
+    active_work().map(ActiveWork::total)
 }
 pub fn on_close_requested() -> QuitDecision {
     // Never inspect Agent/SQLite locks again after exit was authorized.
@@ -503,23 +534,32 @@ pub fn confirm_quit<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     });
 }
 
+/// What the quit decision counted, said the way the confirmation says it.
+fn quit_work(work: Result<ActiveWork, crate::AppError>) -> crate::native_dialog::QuitWork {
+    match work {
+        Ok(work) if work.streaming > 0 => crate::native_dialog::QuitWork::Streaming(work.streaming),
+        Ok(_) => crate::native_dialog::QuitWork::Other,
+        Err(_) => crate::native_dialog::QuitWork::Unknown,
+    }
+}
+
 pub(crate) fn prepare_quit_confirmation<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> tauri_plugin_dialog::MessageDialogBuilder<R> {
     QUIT_DIALOG_OPEN.store(true, Ordering::Release);
-    let message = if crate::agent_host::host().owns_agent() {
-        "Agent work is still active or cannot be checked. Quitting stops all connected clients' work, including CLI conversations. Quit anyway?"
-    } else {
-        "Desktop still has submitted work. Quitting cancels only this Desktop's submitted runs; the external Agent and other clients keep running. Quit anyway?"
-    };
+    let confirmation = crate::native_dialog::quit_confirmation(
+        crate::native_dialog::locale(),
+        quit_work(active_work()),
+        crate::agent_host::host().owns_agent(),
+    );
     let mut dialog = app
         .dialog()
-        .message(message)
-        .title("Quit FutureOS?")
+        .message(confirmation.message)
+        .title(confirmation.title)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "Force quit".into(),
-            "Keep running".into(),
+            confirmation.confirm,
+            confirmation.defer,
         ));
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);
@@ -738,6 +778,63 @@ mod tests {
             QuitDecision::Confirm { open_dialog: false }
         );
         assert_eq!(quit_decision(true, false, Ok(1)), QuitDecision::Proceed);
+    }
+
+    /// The confirmation counts conversations, so the split must keep exactly the
+    /// total the quit decision (and the update flow, which reads
+    /// `active_work_count`) already counted — a split that dropped a category
+    /// would let a loaded Agent quit without a prompt.
+    #[test]
+    fn the_quit_split_keeps_the_total_the_decision_counts() {
+        let activity = future_agent::service::AgentActivity {
+            running: 1,
+            queued: 2,
+            approvals: 3,
+            compactions: 4,
+            commands: 5,
+            background: 6,
+            stopping: false,
+        };
+        let work = split_activity(&activity);
+        assert_eq!(
+            work.streaming, 1,
+            "only a session with a run in flight is 'still generating'"
+        );
+        assert_eq!(work.other, 2 + 3 + 4 + 5 + 6);
+        assert_eq!(work.total(), 21, "every category the decision counts");
+    }
+
+    /// Three states, three sentences: a counted reply, work that is not a reply,
+    /// and a status that could not be read. `Streaming(0)` is not a state the
+    /// dialog can be handed.
+    #[test]
+    fn the_confirmation_names_streaming_runs_and_the_other_states() {
+        use crate::native_dialog::QuitWork;
+        assert_eq!(
+            quit_work(Ok(ActiveWork {
+                streaming: 2,
+                other: 5
+            })),
+            QuitWork::Streaming(2),
+            "the counted conversations are the ones with a reply in flight"
+        );
+        assert_eq!(
+            quit_work(Ok(ActiveWork {
+                streaming: 0,
+                other: 5
+            })),
+            QuitWork::Other
+        );
+        assert_eq!(
+            quit_work(Ok(ActiveWork::default())),
+            QuitWork::Other,
+            "zero work proceeds and never reaches a dialog"
+        );
+        assert_eq!(
+            quit_work(Err("Agent is still starting".into())),
+            QuitWork::Unknown,
+            "an unreadable status is not evidence of idle"
+        );
     }
     /// The dialog that follows a failed exit must read as "one step was
     /// deferred", not as a broken install, while still carrying the diagnostic

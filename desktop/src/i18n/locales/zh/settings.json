@@ -152,6 +152,18 @@
     "title": "完成提示音",
     "description": "智能体任务完成时播放提示音并吸引窗口注意力"
   },
+  "quit": {
+    "title": "现在退出 FutureOS？",
+    "confirm": "强制退出",
+    "defer": "保留运行",
+    "quitAnyway": "仍要退出？",
+    "streamingOne": "还有 1 个会话正在生成回复。",
+    "streamingMany": "还有 {{count}} 个会话正在生成回复。",
+    "otherWork": "没有会话在生成回复，但仍有排队消息、待审批或后台任务在工作。",
+    "unknown": "暂时无法确认是否还有会话在生成。",
+    "costOwned": "退出会中断本机所有正在运行的工作，包括其它客户端的 CLI / TUI 会话。",
+    "costAttached": "退出只会取消本桌面提交的运行；外部 Agent 和其它客户端会继续运行。"
+  },
   "update": {
     "maintenanceUnavailable": "暂时无法确认更新状态，请稍候再试。",
     "confirmRepair": "我已重新安装 FutureOS",
@@ -468,6 +480,9 @@
     "save": "保存模型配置",
     "saving": "正在保存…",
     "saved": "已保存",
+    "unsaved": "有未保存的修改",
+    "unsavedSubject": "Fusion 模型配置",
+    "saveHint": "修改后需点击保存才会生效。",
     "reload": "重新载入",
     "loading": "正在读取 Fusion 设置…",
     "loadFailed": "无法读取 Fusion 设置，请重试。",
@@ -476,6 +491,14 @@
     "participantCount": "参与者须为 2–5 个。",
     "participantRequired": "请为每个参与角色选择模型。",
     "thinkingRequired": "请为每个角色选择思考等级。"
+  },
+  "unsavedGuard": {
+    "title": "还有未保存的修改",
+    "body": "「{{subject}}」的修改还没有保存，离开后将会丢失。",
+    "save": "保存并离开",
+    "saving": "正在保存…",
+    "discard": "放弃修改",
+    "cancel": "继续编辑"
   },
   "alerts": {
     "section": "提示"

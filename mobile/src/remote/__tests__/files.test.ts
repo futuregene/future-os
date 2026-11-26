@@ -50,6 +50,10 @@ jest.mock("expo-file-system", () => {
   >();
   const dirs = new Set<string>();
   let readHook: ((size: number) => void) | undefined;
+  // Providers that can only be streamed: a copy of them is size-driven, and a
+  // stream reports no size, so the copy returns having written nothing.
+  const streamOnly = new Set<string>();
+  const ownsUri = (uri: string) => !uri.startsWith("content:");
 
   class MockFile {
     uri: string;
@@ -77,6 +81,12 @@ jest.mock("expo-file-system", () => {
       return store.get(this.uri)?.modTime ?? 0;
     }
     open(_mode: string): MockHandle {
+      // A picked document arrives as a provider URI (content:// on Android) and
+      // its bytes are reached through the content resolver: a provider that only
+      // streams cannot serve the random-access handle the upload reads with.
+      // Anything the app does not own is refused, like the native module does.
+      if (!ownsUri(this.uri))
+        throw new Error(`Failed to open file handle for content:// URI: ${this.uri}`);
       return new MockHandle(this.uri);
     }
     create(): void {
@@ -97,7 +107,23 @@ jest.mock("expo-file-system", () => {
     async copy(destination: MockFile, _options?: { overwrite?: boolean }): Promise<void> {
       const source = store.get(this.uri);
       if (!source) throw new Error("source_missing");
-      store.set(destination.uri, { ...source });
+      if (streamOnly.has(this.uri)) {
+        store.set(destination.uri, { bytes: new Uint8Array(0) });
+        return;
+      }
+      // A copy carries the bytes, and its size is the number of them — a
+      // provider's announced size is only ever the source's claim. A source the
+      // store represents by size alone copies that many bytes.
+      store.set(destination.uri, {
+        bytes: source.bytes ?? new Uint8Array(0),
+        size: source.bytes ? source.bytes.byteLength : source.size,
+        type: source.type,
+      });
+    }
+    write(content: Uint8Array | string, _options?: { append?: boolean }): Promise<void> {
+      const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
+      store.set(this.uri, { bytes, size: bytes.byteLength });
+      return Promise.resolve();
     }
   }
 
@@ -165,10 +191,13 @@ jest.mock("expo-file-system", () => {
       store.set(uri, opts);
     },
     __onRead: (hook: (size: number) => void) => { readHook = hook; },
+    __streamOnly: (uri: string) => { streamOnly.add(uri); },
+    __uris: () => Array.from(store.keys()),
     __reset: () => {
       readHook = undefined;
       store.clear();
       dirs.clear();
+      streamOnly.clear();
     },
     __dirs: dirs,
   };
@@ -233,6 +262,8 @@ const mockFS = FS as unknown as {
   ) => void;
   __reset: () => void;
   __onRead: (hook: (size: number) => void) => void;
+  __streamOnly: (uri: string) => void;
+  __uris: () => string[];
 };
 
 const mockedManipulate = ImageManipulator.manipulateAsync as jest.Mock;
@@ -720,6 +751,86 @@ describe("pickAttachments", () => {
     });
     const result = await prepareOne(file);
     expect(result[0]!.mobilePreviewUnsupported).toBe(false);
+  });
+});
+
+/**
+ * The system document picker answers with the provider's URI, not a path. The
+ * bytes are then reached through that provider, and a provider is free to serve
+ * only a stream — no size, no random access — which is not the read the upload
+ * performs. Images never meet this (the picker and the converter hand back files
+ * the app owns), so a document is the one attachment whose readability was
+ * never established before it was queued.
+ */
+describe("a document picked through a provider", () => {
+  const pickerUri = "content://com.example.files/report.pdf";
+
+  function pickedFile(bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])): FS.File {
+    return fsFile(pickerUri, { bytes, type: "application/pdf" });
+  }
+
+  function uploadable(): ReturnType<typeof mockClient> {
+    const client = mockClient();
+    client.request.mockResolvedValue({ success: true, data: { uploadId: "u1", chunkBytes: 4 } });
+    client.requestRetry.mockResolvedValue({
+      success: true,
+      data: { uploadId: "u1", contentHash: "hash" },
+    });
+    client.uploadChunk.mockResolvedValue(undefined);
+    return client;
+  }
+
+  test("is copied into the app's cache, so the upload reads a file it owns", async () => {
+    const client = uploadable();
+    const [picked] = await prepareOne(pickedFile());
+
+    expect(picked).toMatchObject({
+      kind: "file",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      originalSize: 8,
+      transferSize: 8,
+      temporary: true,
+    });
+    expect(picked!.localUri.startsWith("/mock/cache/futureos-picked-files/")).toBe(true);
+    expect(await new mockFS.File(picked!.localUri as never).bytes()).toEqual(
+      new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+    );
+
+    // The whole point: the message's bytes are now readable off the provider.
+    const uploaded = await uploadAttachments(client as unknown as RemoteClient, [picked!]);
+    expect(uploaded[0]).toMatchObject({ uploadId: "u1", contentHash: "hash" });
+    expect(client.uploadChunk).toHaveBeenCalledTimes(2);
+  });
+
+  test("falls back to reading the whole document when the provider cannot be copied by size", async () => {
+    mockFS.__streamOnly(pickerUri);
+    const client = uploadable();
+    const [picked] = await prepareOne(pickedFile());
+
+    expect(await new mockFS.File(picked!.localUri as never).bytes()).toEqual(
+      new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]),
+    );
+    const uploaded = await uploadAttachments(client as unknown as RemoteClient, [picked!]);
+    expect(uploaded[0]).toMatchObject({ uploadId: "u1" });
+  });
+
+  test("is refused before it joins a message when its bytes cannot be read at all", async () => {
+    mockFS.__streamOnly(pickerUri);
+    // A provider that reports a size but yields nothing: the copy writes no
+    // bytes and the whole-document read disagrees with the size it announced.
+    const file = fsFile(pickerUri, { bytes: new Uint8Array(0), size: 8 });
+    await expect(prepareOne(file)).rejects.toThrow("attachment_file_unreadable");
+    expect(mockFS.__uris().filter(uri => uri.startsWith("/mock/cache/futureos-picked-files/")))
+      .toEqual([]);
+  });
+
+  test("keeps the picked bytes as the message's size, not the provider's claim", async () => {
+    // A provider whose announced size disagrees with the bytes it yields is
+    // exactly what the desktop refuses as an incomplete upload.
+    const file = fsFile(pickerUri, { bytes: new Uint8Array([1, 2, 3, 4]), size: 9 });
+    const [picked] = await prepareOne(file);
+    expect(picked).toMatchObject({ originalSize: 4, transferSize: 4 });
   });
 });
 

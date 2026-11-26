@@ -152,6 +152,18 @@
     "title": "Completion bell",
     "description": "Play a sound and attract the window's attention when an agent finishes"
   },
+  "quit": {
+    "title": "Quit FutureOS?",
+    "confirm": "Force quit",
+    "defer": "Keep running",
+    "quitAnyway": "Quit anyway?",
+    "streamingOne": "1 conversation is still generating a reply.",
+    "streamingMany": "{{count}} conversations are still generating replies.",
+    "otherWork": "No conversation is generating a reply, but queued messages, approvals or background tasks are still in progress.",
+    "unknown": "FutureOS cannot check whether a conversation is still generating.",
+    "costOwned": "Quitting stops every run on this machine, including CLI and TUI conversations from other clients.",
+    "costAttached": "Quitting cancels only the runs this Desktop submitted; the external Agent and other clients keep running."
+  },
   "update": {
     "maintenanceUnavailable": "We can’t confirm the update status right now. Please wait a moment and try again.",
     "confirmRepair": "I’ve reinstalled FutureOS",
@@ -471,6 +483,9 @@
     "save": "Save model configuration",
     "saving": "Saving…",
     "saved": "Saved",
+    "unsaved": "Unsaved changes",
+    "unsavedSubject": "Fusion model configuration",
+    "saveHint": "Changes apply only after you save.",
     "reload": "Reload",
     "loading": "Loading Fusion settings…",
     "loadFailed": "Could not load Fusion settings. Please retry.",
@@ -479,6 +494,14 @@
     "participantCount": "Choose 2–5 participants.",
     "participantRequired": "Choose a model for every participant.",
     "thinkingRequired": "Choose a thinking level for every role."
+  },
+  "unsavedGuard": {
+    "title": "Save your changes?",
+    "body": "{{subject}} has edits you haven't saved. Leaving now discards them.",
+    "save": "Save and leave",
+    "saving": "Saving…",
+    "discard": "Discard changes",
+    "cancel": "Keep editing"
   },
   "alerts": {
     "section": "Alerts"

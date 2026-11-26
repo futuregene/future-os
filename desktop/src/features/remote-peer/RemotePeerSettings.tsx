@@ -6,6 +6,7 @@ import { Select } from "../../components/ui/Select";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { RemoteFusionSettingsPage } from "../settings/FusionSettingsPage";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
+import { useUnsavedGuardHost } from "../settings/unsavedGuard";
 import { PeerIconChip } from "./PeerIconChip";
 import { peerBadgeText } from "./peerIcons";
 import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
@@ -68,6 +69,9 @@ export function RemotePeerSettings({
   const [error, setError] = useState<string | null>(null);
   /** Which page of these settings is open. See `SettingsSectionPage`. */
   const [page, setPage] = useState<SettingsSectionPage>("root");
+  // The Fusion page keeps a draft of its own; leaving it — "back", the rail,
+  // the dialog behind this one — asks before dropping it.
+  const guard = useUnsavedGuardHost();
 
   // The host advertises which commands it serves; the approval rows are only
   // offered by a host that says it has them, so an older build shows fewer rows
@@ -195,7 +199,7 @@ export function RemotePeerSettings({
     content: React.ReactNode;
     title: string;
   }> = {
-    fusion: { title: "Fusion", content: showFusionEntry ? <RemoteFusionSettingsPage peer={peer} /> : null },
+    fusion: { title: "Fusion", content: showFusionEntry ? <RemoteFusionSettingsPage guard={guard.api} peer={peer} /> : null },
     models: {
       title: t("models"),
       content: (
@@ -220,15 +224,18 @@ export function RemotePeerSettings({
 
   if (page !== "root") {
     return (
-      <SettingsPage
-        backLabel={t("backToSettings")}
-        onBack={() => setPage("root")}
-        title={SUB_PAGES[page].title}
-      >
-        {error ? <p className="text-xs text-danger">{error}</p> : null}
-        {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
-        {SUB_PAGES[page].content}
-      </SettingsPage>
+      <>
+        <SettingsPage
+          backLabel={t("backToSettings")}
+          onBack={() => guard.api.confirm(() => setPage("root"))}
+          title={SUB_PAGES[page].title}
+        >
+          {error ? <p className="text-xs text-danger">{error}</p> : null}
+          {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
+          {SUB_PAGES[page].content}
+        </SettingsPage>
+        {guard.dialog}
+      </>
     );
   }
 

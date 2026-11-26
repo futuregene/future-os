@@ -235,12 +235,14 @@ it("opens the workspace rule editor on the shift-command-enter accelerator", asy
   // The editor is open, not approved: the rule is a decision of its own.
   expect(decision).not.toHaveBeenCalled();
 
-  // Enter in the editor confirms it — the rule is saved and the request approved.
+  // The editor's own button confirms it — the rule is saved and the request
+  // approved. Enter inside the field keeps its ordinary job: nothing.
   await act(async () => {
     container.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
     await Promise.resolve();
-    await Promise.resolve();
   });
+  expect(storage.saveApprovalRule).not.toHaveBeenCalled();
+  await click(button("Save & allow"));
   expect(storage.saveApprovalRule).toHaveBeenCalledWith({ access: "write", path: "a.md", threadId: "T1" });
   expect(decision).toHaveBeenCalledWith(expect.objectContaining({ id: "ap1" }), "approved");
 });
@@ -356,7 +358,9 @@ it("refuses an empty rule pattern and keeps the editor open", async () => {
   expect(container.querySelector(".text-danger")?.textContent).toContain("Rule path cannot be empty");
 });
 
-it("submits the rule from the input's Enter key and closes on cancel", async () => {
+it("leaves the input's Enter inert and closes on cancel", async () => {
+  // Only the button saves: a keystroke in the glob field is editing, not the
+  // dialog's answer.
   render(approval({
     actionPayload: JSON.stringify({ category: "file_write", paths: ["a.md"], tool: "edit" }),
     saveSuggestion: JSON.stringify({ access: "write", path: "a.md" }),
@@ -369,6 +373,10 @@ it("submits the rule from the input's Enter key and closes on cancel", async () 
     );
     await Promise.resolve();
   });
+  expect(storage.saveApprovalRule).not.toHaveBeenCalled();
+  expect(container.querySelector("input")).not.toBeNull();
+
+  await click(button("Save & allow"));
   expect(storage.saveApprovalRule).toHaveBeenCalledTimes(1);
 
   await click(button("Allow in this workspace"));
@@ -670,7 +678,7 @@ it("ignores an unparsable save suggestion instead of opening an empty editor", a
 
 it("ignores a second rule submit while the first is still saving", async () => {
   // concurrency: the pattern input stays enabled during the save, so a second
-  // Enter must not persist the rule (or approve) twice.
+  // press of the save button must not persist the rule (or approve) twice.
   let release: () => void = () => {};
   storage.saveApprovalRule.mockImplementationOnce(() => new Promise<void>((resolve) => {
     release = resolve;
@@ -681,16 +689,15 @@ it("ignores a second rule submit while the first is still saving", async () => {
   }));
   await click(button("Allow in this workspace"));
 
-  const input = container.querySelector<HTMLInputElement>("input")!;
   await act(async () => {
-    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    button("Save & allow")!.click();
     await Promise.resolve();
   });
   expect(storage.saveApprovalRule).toHaveBeenCalledTimes(1);
 
   // A second submit while `deciding` is set is dropped by the guard.
   await act(async () => {
-    input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    button("Save & allow")!.click();
     await Promise.resolve();
   });
   expect(storage.saveApprovalRule).toHaveBeenCalledTimes(1);

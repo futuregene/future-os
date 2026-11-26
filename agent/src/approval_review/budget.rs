@@ -8,7 +8,7 @@ pub(super) const PAIR_LIMIT: usize = 30_000; // Headroom below the upstream 32K 
 pub(super) const TOTAL_LIMIT: usize = 62_000; // Headroom below the upstream 64K request limit.
 pub(super) const ESTIMATOR: &str = "serialized_utf8_bytes_conservative_v1";
 
-// Without a Jev tokenizer, charge every serialized UTF-8 byte as one estimated
+// Without an upstream tokenizer, charge every serialized UTF-8 byte as one estimated
 // token, including JSON escaping/framing. This deliberately underuses capacity;
 // it is not a measured tokenizer count or a guarantee about gateway-added text.
 pub(super) fn estimate(value: &Value) -> usize {

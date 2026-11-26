@@ -25,6 +25,7 @@ import { searchSettings, settingsTabTitleKey } from "./settingsIndex";
 import { ShortcutsPage } from "./ShortcutsPage";
 import { SkillsPage } from "./SkillsPage";
 import { StoragePage } from "./StoragePage";
+import { useUnsavedGuardHost } from "./unsavedGuard";
 import { UpdatePage } from "./UpdatePage";
 
 export type SettingsTab = "appearance" | "shortcuts" | "permission" | "reply" | "storage" | "providers" | "models" | "fusion" | "skills" | "account" | "update" | "about" | "reset" | "environment";
@@ -137,15 +138,21 @@ export function SettingsDialog({
 }) {
   const { t } = useTranslation("settings");
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  // Every way out of this dialog — a nav item, a search result, the backdrop,
+  // Escape — goes through the guard, so a page that keeps a draft asks before
+  // the draft is dropped.
+  const guard = useUnsavedGuardHost();
   // What the rail's search field holds. Kept beside the tab rather than inside
   // the field so that choosing a result can clear it in the same update.
   const [query, setQuery] = useState("");
   const results = searchSettings(t, query);
   const openResult = (entry: SettingsEntry) => {
-    setTab(entry.tab);
-    setQuery("");
-    if (entry.tab === "update")
-      onUpdateSeen?.();
+    guard.api.confirm(() => {
+      setTab(entry.tab);
+      setQuery("");
+      if (entry.tab === "update")
+        onUpdateSeen?.();
+    });
   };
   const build = useBuildInfo();
   const isTestBuild = build.data?.isRelease === false;
@@ -167,7 +174,7 @@ export function SettingsDialog({
   }, [isTestBuild, tab]);
 
   return (
-    <Overlay onClose={onClose} open={open}>
+    <Overlay onClose={() => guard.api.confirm(onClose)} open={open}>
       <section
         aria-label={t("dialog.ariaLabel")}
         aria-modal="true"
@@ -244,9 +251,11 @@ export function SettingsDialog({
                                 tab === item.value && "border-line-soft bg-surface text-ink shadow-xs",
                               )}
                               onClick={() => {
-                                setTab(item.value);
-                                if (item.value === "update")
-                                  onUpdateSeen?.();
+                                guard.api.confirm(() => {
+                                  setTab(item.value);
+                                  if (item.value === "update")
+                                    onUpdateSeen?.();
+                                });
                               }}
                               type="button"
                             >
@@ -331,7 +340,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "fusion" && isTestBuild ? <FusionSettingsPage /> : null}
+            {tab === "fusion" && isTestBuild ? <FusionSettingsPage guard={guard.api} /> : null}
             {tab === "shortcuts" ? <ShortcutsPage /> : null}
             {tab === "account"
               ? (
@@ -383,6 +392,9 @@ export function SettingsDialog({
           </div>
         </div>
       </section>
+      {/* The prompt lives inside the overlay so the settings dialog keeps one
+          root element: it only appears while a draft is being left behind. */}
+      {guard.dialog}
     </Overlay>
   );
 }

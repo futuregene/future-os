@@ -50,8 +50,7 @@ describe("a `<futureos-choice>` tag pair", () => {
     expect(cards(fenced)).toHaveLength(1);
   });
 
-  it("does not accept half a pair", () => {
-    expect(cards("<futureos-choice>\ntitle: T\noption: a | one\noption: b | two")).toEqual([]);
+  it("does not accept a closing tag without its opening one", () => {
     expect(cards("title: T\noption: a | one\noption: b | two\n</futureos-choice>")).toEqual([]);
   });
 
@@ -66,11 +65,51 @@ describe("a `<futureos-choice>` tag pair", () => {
     expect(nodes.map(node => node.type)).toEqual(["code"]);
   });
 
-  it("leaves a pair that prose shares its paragraph with as text", () => {
-    // The pair has to stand on its own, the way the fence does: prose in the same
-    // paragraph keeps the whole block text (and the agent warns about it).
+  it("splits a pair off the prose it shares a paragraph with", () => {
+    // The 2026-11-25 reply wrote `…再问一遍：` and the tag on the next line, no
+    // blank line between. A fence interrupts a paragraph there, so this is the
+    // same attempt: the sentence stays a sentence and the pair becomes a card.
     const attached = "还有一点：\n<futureos-choice>\ntitle: T\noption: a | one\noption: b | two\n</futureos-choice>";
-    expect(cards(attached)).toEqual([]);
+    const nodes = parseFutureMarkdown(attached, undefined, false).nodes;
+    expect(nodes.map(node => node.type)).toEqual(["paragraph", "choiceCard"]);
+    expect(JSON.stringify(nodes[0])).toContain("还有一点：");
+    expect(cards(attached)).toHaveLength(1);
+  });
+
+  it("keeps the prose's own marks when it splits the paragraph", () => {
+    // The split keeps the paragraph's inline children instead of rebuilding it
+    // from the raw lines, so a marked-up sentence does not lose its emphasis on
+    // the way to the card behind it.
+    const attached = "这里有 **加粗** 的一点：\n<futureos-choice>\ntitle: T\noption: a | one\noption: b | two\n</futureos-choice>";
+    const document = parseFutureMarkdown(attached, undefined, false);
+    expect(JSON.stringify(document.nodes[0])).toContain("strong");
+    expect(document.nodes[1]?.type).toBe("choiceCard");
+  });
+
+  it("reads an opening tag that ends the reply as a card", () => {
+    // No closer, nothing after it: there is nothing left to swallow, and a
+    // writer that forgot the closing tag meant a card.
+    const unclosed = "还有一点：\n\n<futureos-choice>\ntitle: T\noption: a | one\noption: b | two";
+    expect(cards(unclosed)).toHaveLength(1);
+  });
+
+  it("leaves an unclosed tag that has prose after it, or no rows, as text", () => {
+    // Mid-reply a missing closer would swallow what follows, so it stays text;
+    // and a body that does not look like option rows is not a card attempt.
+    const midReply = "<futureos-choice>\ntitle: T\noption: a | one\noption: b | two\n\n还有别的吗？";
+    expect(cards(midReply)).toEqual([]);
+    const proseOnly = "<futureos-choice>\ntitle: T\n这里只是一段话";
+    expect(cards(proseOnly)).toEqual([]);
+  });
+
+  it("folds the ways a writer spells the language", () => {
+    // Case, the separator and surrounding space are spelling, not meaning. The
+    // agent's badge folds them the same way (`choice_card.rs`).
+    for (const lang of ["FUTUREOS-CHOICE", "futureos_choice", " futureos-choice "]) {
+      expect(cards(`\`\`\`${lang}\ntitle: T\noption: a | one\noption: b | two\n\`\`\``)).toHaveLength(1);
+    }
+    // Anything past those still has to match: this is another language.
+    expect(cards("```futureos-choice-x\ntitle: T\noption: a | one\noption: b | two\n```")).toEqual([]);
   });
 
   it("drops only an empty closer, never content after the pair", () => {

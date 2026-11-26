@@ -99,7 +99,6 @@ export function RenameModal({
               editable={!generating}
               accessibilityLabel={t(titleKey)}
               onChangeText={setRenameValue}
-              onSubmitEditing={save}
               placeholder={t("sessions.unnamed")}
               placeholderTextColor={colors.inkMuted}
               returnKeyType="done"

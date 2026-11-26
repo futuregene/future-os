@@ -1019,6 +1019,26 @@ fn forwards_to_webview(event_type: &str, origin: EventOrigin) -> bool {
         && !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
 }
 
+/// Whether a session-level event should be published to the remote mirror.
+///
+/// Same exclusion as [`forwards_to_webview`], and for the same reason: the
+/// mirror turns every compaction signal into a divider, and the only client that
+/// sees the replayed one has no durable transcript position to place it at. The
+/// phone appends an unknown checkpoint to the end of its timeline
+/// (`applyStandaloneCompaction`), so a replay of the conversation's whole
+/// compaction history paints days-old dividers under the newest reply, where
+/// they overlap the streaming row. Measured 2026-11-25 on `a2677cac…`: two
+/// dividers from 11-23 and 11-24 appeared at the tail while the session's own
+/// context was untouched.
+///
+/// Every other event is a state statement or a durable message entry, and a
+/// replay of it is how the mirror catches up; dropping those would be a
+/// different bug. The session cursor advances before this is consulted, so
+/// skipping the publish does not cost the observer its place in the log.
+fn forwards_to_mirror(event_type: &str, origin: EventOrigin) -> bool {
+    !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
+}
+
 /// Settle the queued rows the Agent answered while this run's stream moved.
 ///
 /// Off the event loop: the sweep asks the Agent for the session's queue, and a
@@ -1141,18 +1161,20 @@ async fn handle_event_from(
         if forwards_to_webview(event_type, origin) {
             forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
         }
-        crate::agent_events::publish_event(
-            session_id,
-            event_type,
-            &mirror_data,
-            run_id,
-            event.idx,
-            event.epoch,
-            &event.event_id,
-            &event.timestamp,
-            event.session_idx,
-            event.run_sequence,
-        );
+        if forwards_to_mirror(event_type, origin) {
+            crate::agent_events::publish_event(
+                session_id,
+                event_type,
+                &mirror_data,
+                run_id,
+                event.idx,
+                event.epoch,
+                &event.event_id,
+                &event.timestamp,
+                event.session_idx,
+                event.run_sequence,
+            );
+        }
         return true;
     }
 
@@ -2712,6 +2734,114 @@ mod tests {
         );
         assert!(handle_event(session, &shared, &mut state, event).await);
         assert_eq!(webview_fanout(session), ["compaction_committed"]);
+    }
+
+    /// The same pass, on the mirror lane. The phone has no durable transcript
+    /// position for a checkpoint it has never seen, so it appends the divider at
+    /// the end of its timeline — under the newest reply, over the streaming row.
+    #[tokio::test]
+    async fn a_replayed_compaction_does_not_reach_the_mirror() {
+        let mock = mock_agent();
+        let mut client = super::super::client::connect_agent()
+            .await
+            .expect("connect");
+        let session = "sess-replay-mirror";
+        let shared = Arc::new(ObserverShared::new("thread-replay-mirror"));
+        let mut state = ObserverState::default();
+        crate::agent_events::recorded(session); // drain anything recorded before this test
+
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": [
+                {
+                    "type": "compaction_started",
+                    "data": r#"{"type":"compaction_started","operation_id":"cmp_old","trigger":"manual","phase":"standalone"}"#,
+                    "sessionIdx": 0,
+                },
+                {
+                    "type": "compaction_committed",
+                    "data": r#"{"type":"compaction_committed","operation_id":"cmp_old","checkpoint_id":"cp_old","trigger":"manual","phase":"standalone","tokens_before":561173,"tokens_after":47326}"#,
+                    "sessionIdx": 1,
+                },
+                {
+                    "type": "permission_level_changed",
+                    "data": r#"{"permissionLevel":"workspace"}"#,
+                    "sessionIdx": 2,
+                },
+                {
+                    "type": "cwd_changed",
+                    "data": r#"{"cwd":"/synthetic"}"#,
+                    "sessionIdx": 3,
+                },
+            ]}),
+        );
+        assert!(replay_session_events(&mut client, session, &shared, &mut state).await);
+
+        assert_eq!(
+            crate::agent_events::recorded(session),
+            ["permission_level_changed", "cwd_changed"],
+            "a mirror that replays a compaction paints a divider with no place to go"
+        );
+        assert_eq!(
+            state.session_cursor, 3,
+            "the compaction was consumed, not skipped past"
+        );
+    }
+
+    /// And the live lane is untouched: a manual compaction made while a phone is
+    /// watching is exactly the event that has to arrive.
+    #[tokio::test]
+    async fn a_live_compaction_still_reaches_the_mirror() {
+        let _mock = mock_agent();
+        let session = "sess-live-mirror";
+        let shared = Arc::new(ObserverShared::new("thread-live-mirror"));
+        let mut state = ObserverState::default();
+        crate::agent_events::recorded(session);
+
+        let event = session_event_with_data(
+            "compaction_committed",
+            0,
+            r#"{"type":"compaction_committed","operation_id":"cmp_new","checkpoint_id":"cp_new","trigger":"manual","phase":"standalone","tokens_before":561173,"tokens_after":47326}"#,
+        );
+        assert!(handle_event(session, &shared, &mut state, event).await);
+        assert_eq!(
+            crate::agent_events::recorded(session),
+            ["compaction_committed"]
+        );
+    }
+
+    /// The mirror narrowing, stated on its own so the two lanes cannot drift
+    /// apart: same compaction types, same surviving state events.
+    #[test]
+    fn mirror_fanout_is_narrowed_to_non_compaction_replays() {
+        for event_type in [
+            "compaction_started",
+            "compaction_committed",
+            "compaction_failed",
+            "compaction_unchanged",
+        ] {
+            assert!(
+                !forwards_to_mirror(event_type, EventOrigin::Replay),
+                "{event_type} already happened once; the mirror must not draw it twice"
+            );
+            assert!(
+                forwards_to_mirror(event_type, EventOrigin::Live),
+                "{event_type} is the live signal a manual compaction has"
+            );
+        }
+        for event_type in [
+            "permission_level_changed",
+            "model_changed",
+            "cwd_changed",
+            "user_message",
+            "text_chunk",
+            "agent_start",
+        ] {
+            assert!(
+                forwards_to_mirror(event_type, EventOrigin::Replay),
+                "{event_type} is how a mirror catches up; a replay must deliver it"
+            );
+        }
     }
 
     /// The narrowing itself, for every compaction type and for the state events

@@ -180,7 +180,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         | "sync_skills" => return skills::handle(state, &cmd),
         // System-wide, no session needed: invalidates the skills discovery cache.
         "refresh_skills" => return providers::cmd_refresh_skills(state, id),
-        // Recommend at most one uninstalled skill via Jev; sessionless.
+        // Recommend at most one uninstalled skill via the decider route; sessionless.
         "suggest_skill" => return providers::cmd_suggest_skill(id, &cmd),
         "probe_sandbox" => return settings::handle_probe_sandbox(id),
         "probe_windows_sandbox" => return settings::handle_probe_windows_sandbox(id),
