@@ -708,32 +708,35 @@ async fn panel(
     // Only this phase's participants may extend this phase's wait.
     ctx.progress.reset();
     loop {
-        let next = match deadline
-            .cutoff(pending.len(), ctx.progress.last())
-            .filter(|_| !*stop.borrow())
-        {
-            Some(cutoff) => {
-                let wake = cutoff.min(tokio::time::Instant::now() + resilience::PANEL_POLL);
-                match tokio::time::timeout_at(wake, pending.next()).await {
-                    Ok(next) => next,
-                    // Re-read progress so a participant that is still working
-                    // keeps its slot instead of being cut mid-answer.
-                    Err(_) => {
-                        if tokio::time::Instant::now() >= cutoff {
-                            // Keep polling the workers so they can abort their own
-                            // Agent requests and persist the outcome before we synthesize.
-                            stop.send_replace(true);
-                        }
-                        continue;
+        let next = if deadline.is_armed() && !*stop.borrow() {
+            let poll_at = tokio::time::Instant::now() + resilience::PANEL_POLL;
+            let wake = deadline
+                .cutoff(pending.len(), &ctx.progress)
+                .map_or(poll_at, |cutoff| cutoff.min(poll_at));
+            match tokio::time::timeout_at(wake, pending.next()).await {
+                Ok(next) => next,
+                Err(_) => {
+                    // A worker can start or emit more content while this timer is
+                    // pending. Use the latest state before stopping the panel.
+                    if deadline
+                        .cutoff(pending.len(), &ctx.progress)
+                        .is_some_and(|cutoff| tokio::time::Instant::now() >= cutoff)
+                    {
+                        stop.send_replace(true);
                     }
+                    continue;
                 }
             }
-            None => pending.next().await,
+        } else {
+            // After signalling, drain the workers so they can fence and record
+            // the outcome of each accepted Agent request before synthesis.
+            pending.next().await
         };
         let Some((participant, model, result)) = next else {
             break;
         };
         deadline.participant_finished(tokio::time::Instant::now());
+        ctx.progress.participant_finished(&participant);
         match result {
             Ok(report) => good.push(json!({"participant": participant, "model": model.model, "response": report.text, "validation_errors":report.validation_errors})),
             Err(error) => {
@@ -1300,6 +1303,9 @@ impl ChildSession<'_, '_, '_> {
         let ctx = self.ctx;
         let step = &mut *self.step;
         let mut observed_bytes = 0;
+        let mut awaiting_start = !deadline_reached
+            && self.panel_stop.is_some()
+            && ctx.config.panel_timeout_secs.is_none();
         loop {
             if STOPPING.load(Ordering::Acquire) || ctx.store.get(&ctx.run.id)?.terminal() {
                 let _ = abort(step).await;
@@ -1312,6 +1318,14 @@ impl ChildSession<'_, '_, '_> {
             .await?;
             if deadline_reached && state["requestedRun"]["status"].as_str() != Some("completed") {
                 return Err(panel_timeout());
+            }
+            if awaiting_start
+                && state["activeRun"]["runId"].as_str() == Some(step.agent_run_id.as_str())
+                && state["activeRun"]["state"].as_str() == Some("running")
+            {
+                ctx.progress
+                    .participant_started(&step.participant, tokio::time::Instant::now());
+                awaiting_start = false;
             }
             if let Some(progress) = &self.idle_progress {
                 let metrics = rpc(command("get_runtime_metrics", &step.session_id)).await?;
