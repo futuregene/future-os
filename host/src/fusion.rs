@@ -664,6 +664,11 @@ async fn panel(
     prompt: &str,
     review_material: Option<(&[Value], &Value)>,
 ) -> Result<Vec<Value>> {
+    let mut deadline = PanelDeadline::new(
+        ctx.config
+            .panel_timeout_secs
+            .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds)),
+    );
     let mut pending = futures::stream::FuturesUnordered::new();
     let (stop, panel_stop) = watch::channel(false);
     let review_snapshot = review_material
@@ -700,7 +705,6 @@ async fn panel(
     }
     let mut good = vec![];
     let mut persistence_error = None;
-    let mut deadline = PanelDeadline::default();
     // Only this phase's participants may extend this phase's wait.
     ctx.progress.reset();
     loop {
@@ -1283,14 +1287,16 @@ impl reports::ReportSession for ChildSession<'_, '_, '_> {
         let mut panel_stop = self.panel_stop.clone();
         tokio::select! {
             biased;
-            result = self.wait_for_output() => result,
-            _ = wait_for_panel_timeout(panel_stop.as_mut()) => Err(panel_timeout()),
+            result = self.wait_for_output(false) => result,
+            // A report can finish between polls. Read the accepted run once more
+            // before fencing it so a completed report still reaches this panel.
+            _ = wait_for_panel_timeout(panel_stop.as_mut()) => self.wait_for_output(true).await,
         }
     }
 }
 
 impl ChildSession<'_, '_, '_> {
-    async fn wait_for_output(&mut self) -> Result<String> {
+    async fn wait_for_output(&mut self, deadline_reached: bool) -> Result<String> {
         let ctx = self.ctx;
         let step = &mut *self.step;
         let mut observed_bytes = 0;
@@ -1304,6 +1310,9 @@ impl ChildSession<'_, '_, '_> {
                 ..command("get_state", &step.session_id)
             })
             .await?;
+            if deadline_reached && state["requestedRun"]["status"].as_str() != Some("completed") {
+                return Err(panel_timeout());
+            }
             if let Some(progress) = &self.idle_progress {
                 let metrics = rpc(command("get_runtime_metrics", &step.session_id)).await?;
                 ensure!(

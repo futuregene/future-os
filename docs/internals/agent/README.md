@@ -51,7 +51,7 @@ The tables below cover all of them.
 | `sandbox/` | OS sandbox backends and path-based approval rules | `agent/src/sandbox/mod.rs`, `agent/src/sandbox/backend.rs`, `agent/src/sandbox/rules.rs` |
 | `approval_review/` | Model review that classifies Ask requests; deterministic policy owns execution | `agent/src/approval_review/mod.rs`, `agent/src/approval_review/policy.rs` |
 | `skills/` | Skill discovery from `~/.future/agent/skills/` and `~/.agents/skills/` | `agent/src/skills/mod.rs` |
-| `skill_reco/` | The Jev-backed `suggest_skill` recommender | `agent/src/skill_reco/mod.rs` |
+| `skill_reco/` | The decider-backed `suggest_skill` recommender | `agent/src/skill_reco/mod.rs` |
 | `cli/` | clap entry shared by `future-agent` and `future agent` | `agent/src/cli.rs` |
 | `logfile.rs` | Log-file mirroring; keeps terminal and file output identical | `agent/src/logfile.rs` |
 | `utils/` | Home/session directories, ID generation, path helpers | `agent/src/utils/mod.rs` |

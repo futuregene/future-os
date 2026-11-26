@@ -81,30 +81,74 @@ pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>,
         .map_err(crate::Error::from)
 }
 
-/// CAS an unverified row back to `running` because the Agent's ledger still owns
-/// the run — it is executing it, or holding it in its queue behind another run.
-/// The failure markers and the end time are cleared so the row is a live run
-/// again, which is what makes the active-run watchdog and the re-attach path
-/// take it over and settle it from the Agent's own terminal marker.
+/// Which live shape the Agent's ledger reported for a row the desktop settled on
+/// its own — the two answers [`revive_unverified_run`] can restore.
+///
+/// They are deliberately two: `queued` exists so a turn the Agent is *holding*
+/// is never mistaken for the run this conversation is watching stream (see
+/// [`super::QUEUED_RUN_STATUS`]). Restoring every live row as `running` put a
+/// held turn back on the "latest run" seat, and the open view opened a live
+/// preview for a run with no events — the second, empty assistant bubble of
+/// 2026-11-26.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevivedRunState {
+    /// The Agent is executing this run now.
+    Executing,
+    /// The Agent accepted the turn and is holding it behind the run ahead.
+    Queued,
+}
+
+impl RevivedRunState {
+    /// The run status this shape restores — also the status the caller emits to
+    /// the UI, since the two must never disagree.
+    pub fn status(self) -> &'static str {
+        match self {
+            Self::Executing => "running",
+            Self::Queued => super::QUEUED_RUN_STATUS,
+        }
+    }
+
+    /// The marker a queued row carries from the moment it is accepted
+    /// (`store::mark_run_queued` writes the same pair); an executing row has no
+    /// error on it at all.
+    fn error_type(self) -> Option<&'static str> {
+        match self {
+            Self::Executing => None,
+            Self::Queued => Some("queue_accepted"),
+        }
+    }
+}
+
+/// CAS an unverified row back to the live shape the Agent's ledger reports: it
+/// is executing the run (`running`), or holding it in its queue behind another
+/// run (`queued`). The failure markers and the end time are cleared so the row
+/// is a live run again, which is what makes the active-run watchdog and the
+/// re-attach path take it over and settle it from the Agent's own terminal
+/// marker.
+///
+/// The status is not decorative: `queued` is what keeps such a row from winning
+/// the "latest run" read and anchoring the conversation's live preview on a run
+/// that has not started. Reviving both shapes as `running` erased that
+/// distinction — the defect behind the duplicate empty reply bubble.
 ///
 /// Returns whether a row changed; the guard is a compare-and-set over the
 /// unverified terminal shapes, so a row another writer already moved is left
 /// alone. The caller owns the UI notification (see `desktop/CLAUDE.md` #11).
-pub fn revive_unverified_run(run_id: &str) -> Result<bool, crate::Error> {
+pub fn revive_unverified_run(run_id: &str, state: RevivedRunState) -> Result<bool, crate::Error> {
     let now = now_millis();
     let conn = connect()?;
     let affected = conn.execute(
         &format!(
             "UPDATE runs
-         SET status = 'running',
+         SET status = ?1,
              error_message = NULL,
-             error_type = NULL,
+             error_type = ?2,
              ended_at = NULL,
-             updated_at = ?1
-         WHERE id = ?2
+             updated_at = ?3
+         WHERE id = ?4
            AND {UNVERIFIED_TERMINAL_RUN_SQL}"
         ),
-        params![now, run_id],
+        params![state.status(), state.error_type(), now, run_id],
     )?;
     Ok(affected > 0)
 }
@@ -1120,7 +1164,7 @@ mod tests {
         drop(conn);
 
         // Revive: the row becomes a live run again, with no failure left on it.
-        assert!(revive_unverified_run("r_failed").expect("revive"));
+        assert!(revive_unverified_run("r_failed", RevivedRunState::Executing).expect("revive"));
         let row = crate::store::get_run("r_failed")
             .expect("get")
             .expect("some");
@@ -1129,11 +1173,31 @@ mod tests {
         assert_eq!(row.error_type, None);
         assert_eq!(row.ended_at, None);
         // ... and reviving it twice cannot happen (it is no longer a candidate).
-        assert!(!revive_unverified_run("r_failed").expect("revive twice"));
+        assert!(
+            !revive_unverified_run("r_failed", RevivedRunState::Executing).expect("revive twice")
+        );
+
+        // A row the Agent is only *holding* comes back `queued`: that is the
+        // status that keeps it off the "latest run" seat, so the conversation
+        // keeps watching the run actually streaming instead of opening a live
+        // reply bubble for this one. Reviving it `running` is the defect behind
+        // the duplicate empty assistant bubble (2026-11-26).
+        assert!(revive_unverified_run("r_stale", RevivedRunState::Queued).expect("revive queued"));
+        let row = crate::store::get_run("r_stale")
+            .expect("get")
+            .expect("some");
+        assert_eq!(row.status, crate::store::QUEUED_RUN_STATUS);
+        assert_eq!(row.error_message, None);
+        assert_eq!(
+            row.error_type.as_deref(),
+            Some("queue_accepted"),
+            "a revived queued row carries the same marker `mark_run_queued` writes"
+        );
+        assert_eq!(row.ended_at, None);
 
         // The user's abort and a completed row are never touched.
-        assert!(!revive_unverified_run("r_aborted").expect("abort"));
-        assert!(!revive_unverified_run("r_complete").expect("completed"));
+        assert!(!revive_unverified_run("r_aborted", RevivedRunState::Executing).expect("abort"));
+        assert!(!revive_unverified_run("r_complete", RevivedRunState::Queued).expect("completed"));
         assert!(
             !settle_unverified_run_from_agent("r_aborted", "completed", None, None).expect("abort")
         );

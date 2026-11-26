@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AppSettings } from "../../integrations/storage/appSettings";
+import type { UnsavedGuardApi } from "./unsavedGuard";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +10,11 @@ import { SettingsDialog } from "./SettingsDialog";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const mocks = vi.hoisted(() => ({ buildInfo: null as { version: string; isRelease: boolean } | null }));
+const mocks = vi.hoisted(() => ({
+  buildInfo: null as { version: string; isRelease: boolean } | null,
+  fusionDirty: false,
+  fusionSave: null as (() => Promise<boolean>) | null,
+}));
 
 vi.mock("../../integrations/tauri/useBuildInfo", () => ({
   useBuildInfo: () => ({ data: mocks.buildInfo }),
@@ -103,7 +108,22 @@ vi.mock("./ModelsPage", () => ({
     </div>
   ),
 }));
-vi.mock("./FusionSettingsPage", () => ({ FusionSettingsPage: () => <div data-page="fusion" /> }));
+vi.mock("./FusionSettingsPage", async () => {
+  // The real page is a draft form that registers itself with the dialog's
+  // unsaved guard; the probe stands in for it so this suite can decide whether
+  // a draft exists.
+  const { useUnsavedGuard } = await import("./unsavedGuard");
+  return {
+    FusionSettingsPage: (props: { guard?: UnsavedGuardApi | null }) => {
+      useUnsavedGuard(props.guard, {
+        subject: "Fusion model configuration",
+        isDirty: () => mocks.fusionDirty,
+        save: () => mocks.fusionSave?.() ?? Promise.resolve(false),
+      });
+      return <div data-page="fusion" />;
+    },
+  };
+});
 vi.mock("./EnvironmentPage", () => ({ EnvironmentPage: () => <div data-page="environment" /> }));
 vi.mock("./CommunityEditionSection", () => ({
   CommunityEditionSection: (props: { communityEdition: boolean; onChangeCommunityEdition: (v: boolean) => void }) => (
@@ -131,6 +151,8 @@ const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] =
 
 beforeEach(() => {
   mocks.buildInfo = { version: "1.0.0-dev.abc", isRelease: false };
+  mocks.fusionDirty = false;
+  mocks.fusionSave = null;
 });
 
 afterEach(() => {
@@ -428,6 +450,78 @@ describe("settingsDialog Fusion entry", () => {
     expect(navLabels(container)).not.toContain("Fusion");
     expect(page(container)).toBe("appearance");
     expect(container.querySelector("[data-page=fusion]")).toBeNull();
+  });
+});
+
+describe("settingsDialog unsaved-guard wiring", () => {
+  const prompt = (container: HTMLElement) => container.textContent?.includes("Save your changes?") ?? false;
+  const dialogButton = (container: HTMLElement, label: string) =>
+    [...container.querySelectorAll("button")].find(item => item.textContent?.trim() === label)!;
+
+  it("asks before a tab change drops a page's unsaved edits", () => {
+    mocks.fusionDirty = true;
+    const { container } = mount({ initialTab: "fusion" });
+
+    act(() => navButton(container, "About").click());
+
+    expect(prompt(container)).toBe(true);
+    expect(page(container)).toBe("fusion");
+    expect(header(container)).toBe("Fusion");
+
+    act(() => dialogButton(container, "Discard changes").click());
+
+    expect(prompt(container)).toBe(false);
+    expect(page(container)).toBe("about");
+  });
+
+  it("asks before the dialog closes, and saves on request", async () => {
+    mocks.fusionDirty = true;
+    const save = vi.fn(async () => true);
+    mocks.fusionSave = save;
+    const onClose = vi.fn();
+    const { container } = mount({ initialTab: "fusion", onClose });
+
+    // The backdrop is the overlay's own close control; the first one belongs to
+    // the settings dialog (the prompt's overlay is not up yet).
+    act(() => container.querySelectorAll<HTMLButtonElement>("button[aria-label=Close]")[0]!.click());
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(prompt(container)).toBe(true);
+
+    await act(async () => {
+      dialogButton(container, "Save and leave").click();
+    });
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes straight away when the page holds no edits", () => {
+    const onClose = vi.fn();
+    const { container } = mount({ initialTab: "fusion", onClose });
+
+    act(() => container.querySelectorAll<HTMLButtonElement>("button[aria-label=Close]")[0]!.click());
+
+    expect(prompt(container)).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes a search result through the guard too", () => {
+    mocks.fusionDirty = true;
+    const { container } = mount({ initialTab: "fusion" });
+
+    // Typing moves the rail into its results list; picking one is navigation.
+    const field = container.querySelector<HTMLInputElement>("input[type=search]")!;
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(field, "models");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    act(() => container.querySelector<HTMLButtonElement>("[data-settings-results] button")!.click());
+
+    expect(prompt(container)).toBe(true);
+    expect(page(container)).toBe("fusion");
   });
 });
 

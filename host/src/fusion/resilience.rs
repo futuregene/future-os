@@ -61,31 +61,41 @@ impl ProgressClock {
     }
 }
 
-#[derive(Default)]
-pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
+pub(super) struct PanelDeadline {
+    phase_deadline: Option<tokio::time::Instant>,
+    first_finished: Option<tokio::time::Instant>,
+}
 
 impl PanelDeadline {
-    /// The first terminal result (an answer or a failure) starts the wait.
-    pub fn participant_finished(&mut self, now: tokio::time::Instant) {
-        self.0.get_or_insert(now);
+    pub fn new(phase_deadline: Option<tokio::time::Instant>) -> Self {
+        Self {
+            phase_deadline,
+            first_finished: None,
+        }
     }
 
-    /// `None` until a participant has finished. Afterwards the earlier of the
-    /// silence window (measured from the latest content progress, so an active
-    /// participant keeps its own slot open) and the hard ceiling.
+    /// The first terminal result (an answer or a failure) starts the progress-based wait.
+    pub fn participant_finished(&mut self, now: tokio::time::Instant) {
+        self.first_finished.get_or_insert(now);
+    }
+
+    /// A configured phase deadline applies even before a participant finishes.
+    /// Afterwards the silence window and existing hard ceiling can cut the wait short.
     pub fn cutoff(
         &self,
         pending: usize,
         progress: Option<tokio::time::Instant>,
     ) -> Option<tokio::time::Instant> {
-        let first = self.0?;
-        let window = if pending <= 1 {
-            PANEL_LAST_WINDOW
-        } else {
-            PANEL_WINDOW
-        };
-        let anchor = progress.map_or(first, |at| at.max(first));
-        Some((anchor + window).min(first + PANEL_CEILING))
+        let progress_cutoff = self.first_finished.map(|first| {
+            let window = if pending <= 1 {
+                PANEL_LAST_WINDOW
+            } else {
+                PANEL_WINDOW
+            };
+            let anchor = progress.map_or(first, |at| at.max(first));
+            (anchor + window).min(first + PANEL_CEILING)
+        });
+        progress_cutoff.into_iter().chain(self.phase_deadline).min()
     }
 }
 
@@ -370,7 +380,7 @@ mod tests {
     fn panel_wait_starts_after_any_terminal_result_and_never_extends() {
         let now = tokio::time::Instant::now();
         let minutes = |count: u64| Duration::from_secs(count * 60);
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
 
         assert_eq!(deadline.cutoff(3, None), None);
         deadline.participant_finished(now);
@@ -383,7 +393,7 @@ mod tests {
     fn content_progress_keeps_a_working_panel_alive_up_to_the_ceiling() {
         let now = tokio::time::Instant::now();
         let minutes = |count: u64| Duration::from_secs(count * 60);
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
         deadline.participant_finished(now);
 
         // The run that exposed this: two panelists were still reasoning ten
@@ -408,7 +418,7 @@ mod tests {
     #[test]
     fn the_last_pending_participant_tightens_the_deadline_even_after_a_failure() {
         let now = tokio::time::Instant::now();
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
         deadline.participant_finished(now);
         deadline.participant_finished(now + Duration::from_secs(120));
         assert_eq!(
@@ -416,11 +426,34 @@ mod tests {
             Some(now + Duration::from_secs(300))
         );
 
-        let mut two_participants = PanelDeadline::default();
+        let mut two_participants = PanelDeadline::new(None);
         two_participants.participant_finished(now);
         assert_eq!(
             two_participants.cutoff(2, None),
             Some(now + Duration::from_secs(600))
+        );
+    }
+
+    #[test]
+    fn configured_deadline_applies_before_a_report_and_cannot_be_extended_by_progress() {
+        let now = tokio::time::Instant::now();
+        let limit = now + Duration::from_secs(900);
+        let mut deadline = PanelDeadline::new(Some(limit));
+
+        assert_eq!(deadline.cutoff(3, None), Some(limit));
+        assert_eq!(
+            deadline.cutoff(3, Some(now + Duration::from_secs(899))),
+            Some(limit)
+        );
+
+        deadline.participant_finished(now + Duration::from_secs(60));
+        assert_eq!(
+            deadline.cutoff(2, None),
+            Some(now + Duration::from_secs(660))
+        );
+        assert_eq!(
+            deadline.cutoff(2, Some(now + Duration::from_secs(899))),
+            Some(limit)
         );
     }
 

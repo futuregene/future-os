@@ -246,7 +246,7 @@ differences, and acceptance: [macOS](SANDBOX/MACOS.md),
   fallback (reads open, writes limited to workspace/temp).
 - **Four approval modes** (input-box dropdown / settings page switch, global):
   - **Automatic review** (opt-in, requires a working OS sandbox): preserve sandbox
-    enforcement and let Jev classify only rule-level Ask requests. FutureOS makes
+    enforcement and let the decision model classify only rule-level Ask requests. FutureOS makes
     the final decision using risk, authorization, reason and confidence. Errors,
     uncertainty, cancelled or stale requests deny execution. Results appear in
     Runs details; automatic reviews never enter the interactive pending queue.

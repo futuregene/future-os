@@ -51,6 +51,18 @@ pub fn set_window_caption_colors(
     }
 }
 
+/// Register the language the window is showing.
+///
+/// Native dialogs raised from Rust outside a command — today the quit
+/// confirmation — have no invoke of their own to carry a language tag, so the
+/// frontend pushes the language it resolved here on start and on every change;
+/// see [`crate::native_dialog`].
+#[tauri::command]
+pub fn set_ui_language(language: String) -> Result<(), String> {
+    crate::native_dialog::set_language(&language);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +78,23 @@ mod tests {
     fn initialize_creates_a_fresh_store() {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd_app_init");
         initialize_app_store().expect("initialize the store");
+    }
+
+    /// The command is the only path from the window's resolved language to the
+    /// dialogs Rust raises on its own: a registration that did not reach the
+    /// registry would leave the quit confirmation in the previous language.
+    #[test]
+    fn the_ui_language_command_reaches_the_dialog_registry() {
+        let _serialized = crate::native_dialog::language_test_guard();
+        set_ui_language("zh-CN".into()).expect("record a Chinese tag");
+        assert_eq!(
+            crate::native_dialog::locale(),
+            crate::native_dialog::Locale::Zh
+        );
+        set_ui_language("en-US".into()).expect("record an English tag");
+        assert_eq!(
+            crate::native_dialog::locale(),
+            crate::native_dialog::Locale::En
+        );
     }
 }

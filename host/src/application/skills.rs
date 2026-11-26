@@ -19,7 +19,7 @@ pub async fn list_available_skills() -> Result<Vec<agent_bridge::AvailableSkill>
 }
 
 /// Recommend at most one UNINSTALLED skill for the user's message via the
-/// agent's Jev recommender. The caller decides when to invoke (toggle, length
+/// agent's decider recommender. The caller decides when to invoke (toggle, length
 /// bounds, login/balance, daily budget) and supplies the candidate set
 /// (catalog − installed); this only forwards to the agent. Returns `None` on
 /// refusal, timeout, error, or when the feature is unavailable server-side.

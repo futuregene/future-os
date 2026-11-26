@@ -365,9 +365,12 @@ pub fn project_prompt_context(
 ) -> PromptContext {
     let cutoff_index = checkpoint.and_then(|checkpoint| {
         checkpoint.cutoff_entry_id.as_deref().and_then(|cutoff| {
+            // A synthesised recovery message shares its owner's boundary, and it
+            // follows that owner: the range ends after the last of them, so the
+            // pair is never split across the summary boundary.
             messages
                 .iter()
-                .position(|message| message.journal_entry_id() == Some(cutoff))
+                .rposition(|message| message.journal_boundary_entry_id() == Some(cutoff))
         })
     });
     let tail_start = cutoff_index.map_or(0, |index| index.saturating_add(1));
@@ -380,12 +383,15 @@ pub fn project_prompt_context(
             .collect();
         for original in &messages[..tail_start] {
             if original
-                .journal_entry_id()
+                .journal_boundary_entry_id()
                 .is_some_and(|id| protected.contains(id))
             {
                 if let Some(message) = protected_text(original) {
                     projected.push(ProjectedMessage {
-                        source_entry_ids: vec![message.journal_entry_id().unwrap().to_string()],
+                        source_entry_ids: vec![message
+                            .journal_boundary_entry_id()
+                            .unwrap()
+                            .to_string()],
                         message,
                     });
                 }
@@ -417,7 +423,7 @@ pub fn project_prompt_context(
     }
     projected.extend(messages[tail_start..].iter().cloned().map(|message| {
         let source_entry_ids = message
-            .journal_entry_id()
+            .journal_boundary_entry_id()
             .map(|id| vec![id.to_string()])
             .unwrap_or_default();
         ProjectedMessage {
@@ -686,6 +692,123 @@ mod tests {
             serde_json::to_value(&projected.messages[1].message).unwrap(),
             serde_json::to_value(&recent).unwrap()
         );
+    }
+
+    /// Turns a recovered tool placeholder into the shape `session::repair`
+    /// produces: an invented message ID plus the journal entry that issued the
+    /// call it stands in for.
+    fn recovered_placeholder(owner: &str, call: &str) -> AgentMessage {
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+            serde_json::json!(format!("missing-tool:{owner}:{call}")),
+        );
+        metadata.insert(
+            AgentMessage::JOURNAL_BOUNDARY_ID_KEY.into(),
+            serde_json::json!(owner),
+        );
+        AgentMessage {
+            role: "tool".into(),
+            content: vec![ContentBlock::tool_result(
+                call,
+                "tool result unknown",
+                false,
+            )],
+            metadata: Some(metadata),
+            ..Default::default()
+        }
+    }
+
+    fn entry_id_message(role: &str, id: &str, text: &str) -> AgentMessage {
+        let mut message =
+            AgentMessage::new_user(role, serde_json::json!([{"type":"text","text":text}]));
+        message
+            .metadata
+            .get_or_insert_with(serde_json::Map::new)
+            .insert(
+                AgentMessage::JOURNAL_ENTRY_ID_KEY.into(),
+                serde_json::json!(id),
+            );
+        message
+    }
+
+    /// A recovered placeholder has no journal entry, so a checkpoint must never
+    /// take its invented ID as a boundary — that commit can only be refused.
+    #[test]
+    fn recovered_tool_placeholder_is_covered_by_the_entry_that_issued_its_call() {
+        let owner = entry_id_message("assistant", "a1", "I will read the file");
+        let placeholder = recovered_placeholder("a1", "call-1");
+        let later = entry_id_message("user", "u2", "and then?");
+        let projected = project_prompt_context(
+            &[
+                entry_id_message("user", "u1", "start"),
+                owner,
+                placeholder,
+                later,
+            ],
+            None,
+            None,
+            10_000,
+        );
+        assert_eq!(projected.messages.len(), 4);
+        assert_eq!(projected.messages[1].source_entry_ids, vec!["a1"]);
+        assert_eq!(
+            projected.messages[2].source_entry_ids,
+            vec!["a1"],
+            "the placeholder belongs to the entry that issued the call, not to an ID that \
+             was never written to the journal"
+        );
+        assert_eq!(projected.messages[3].source_entry_ids, vec!["u2"]);
+    }
+
+    /// Cutting the projection at the owner must not leave the placeholder behind
+    /// as an orphan tool result in the retained tail: the provider rejects that
+    /// shape, and the pair is one conversation unit.
+    #[test]
+    fn a_checkpoint_cut_at_the_owner_retains_neither_half_of_a_recovered_call() {
+        let owner = entry_id_message("assistant", "a1", "I will read the file");
+        let placeholder = recovered_placeholder("a1", "call-1");
+        let later = entry_id_message("user", "u2", "and then?");
+        let checkpoint = ContextCheckpoint {
+            entry_id: "checkpoint-entry".into(),
+            protected_entry_ids: Vec::new(),
+            checkpoint_id: "cp-1".into(),
+            covered_from_entry_id: Some("a1".into()),
+            cutoff_entry_id: Some("a1".into()),
+            summary: vec![ContentBlock::text("summary")],
+            tokens_before: 100,
+            tokens_after: 10,
+            trigger: CompactionTrigger::Automatic,
+            phase: None,
+            algorithm_version: "v2".into(),
+            summary_outcome: None,
+            model: "model".into(),
+            context_window: 200,
+            created_at: chrono::Utc::now(),
+        };
+
+        let projected = project_prompt_context(
+            &[
+                entry_id_message("user", "u1", "start"),
+                owner,
+                placeholder,
+                later,
+            ],
+            Some(&checkpoint),
+            None,
+            200,
+        );
+        let tail: Vec<_> = projected
+            .messages
+            .iter()
+            .map(|item| item.message.role.clone())
+            .collect();
+        assert_eq!(
+            tail,
+            vec!["user", "user"],
+            "summary then only the retained turn"
+        );
+        assert_eq!(projected.messages[1].source_entry_ids, vec!["u2"]);
     }
 
     // ─── content_text_pieces ───────────────────────────────────────────────

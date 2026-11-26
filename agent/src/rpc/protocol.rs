@@ -159,7 +159,7 @@ pub struct RpcCommand {
     pub thinking_probe: Option<crate::llm::probe::ThinkingLevelProbeSpec>,
 
     // suggest_skill — the user's first-turn text plus the UNINSTALLED skill
-    // candidates the caller offers to Jev. Populated from the proto fields by
+    // candidates the caller offers to the decision model. Populated from the proto fields by
     // the gRPC layer; the agent never sees installed skills.
     #[serde(skip)]
     pub suggest_query: String,

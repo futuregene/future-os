@@ -104,10 +104,17 @@ fn receipt_entry(db: &Connection, session: &str, checkpoint: &CheckpointRef) -> 
             |row| row.get(0),
         )
         .optional()?;
-    ensure!(
-        cutoff.is_some_and(|cutoff| cutoff < position),
-        "cached compaction checkpoint range is invalid"
-    );
+    if !cutoff.is_some_and(|cutoff| cutoff < position) {
+        tracing::error!(
+            checkpoint_entry = %checkpoint.entry_id,
+            cutoff_entry = ?checkpoint.cutoff_entry_id,
+            covered_from_entry = ?checkpoint.covered_from_entry_id,
+            checkpoint_position = position,
+            cutoff_position = ?cutoff,
+            "compaction checkpoint range is invalid"
+        );
+        anyhow::bail!("cached compaction checkpoint range is invalid");
+    }
     if let Some(from) = &checkpoint.covered_from_entry_id {
         let from = crate::session::identity::BoundIdentity::entry(db, session, from)?;
         let first: Option<i64> = db

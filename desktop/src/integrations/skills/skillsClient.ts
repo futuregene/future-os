@@ -179,7 +179,7 @@ export interface SkillCandidate {
 
 /**
  * Recommend at most one uninstalled skill for the user's text via the agent's
- * Jev recommender. The caller decides when to invoke (length cap, login/balance,
+ * decider recommender. The caller decides when to invoke (length cap, login/balance,
  * daily budget) and supplies the candidate set (catalogue − installed). Returns
  * null on refusal, timeout, error, or when the feature is unavailable
  * server-side — recommendation is best-effort, so every failure collapses to

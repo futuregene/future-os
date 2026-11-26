@@ -284,8 +284,27 @@ fn nearest_existing(path: &Path) -> Option<&Path> {
 /// Open a folder in the OS file manager; the fallback for a revealed item that
 /// is gone.
 fn open_folder_with_system(folder: &Path) -> Result<(), crate::AppError> {
-    open::that(folder)
-        .map_err(|error| format!("Failed to open {}: {error}", folder.display()).into())
+    let target = native_separators(folder);
+    open::that(&target).map_err(|error| format!("Failed to open {target}: {error}").into())
+}
+
+/// The path in the spelling the Windows shell reads back.
+///
+/// Windows takes `/` in most of its path APIs, but `explorer` does not: handed
+/// `C:/Users/me/pic.png` it opens Documents (or Desktop) instead — the same
+/// wrong-folder symptom as a missing file, from a target that is perfectly
+/// present. That spelling is not exotic: it is exactly how a model writes the
+/// link for a file it just saved (`[pic.png](<C:/Users/me/pic.png>)`), so the
+/// reveal has to normalize before it hands the path over. Everywhere else `/`
+/// *is* the separator and the path is already what the shell expects.
+#[cfg(target_os = "windows")]
+fn native_separators(path: &Path) -> String {
+    path.display().to_string().replace('/', "\\")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn native_separators(path: &Path) -> String {
+    path.display().to_string()
 }
 
 /// The platform arms of [`reveal_in_file_manager`]. Built from `explorer`/`open`
@@ -316,7 +335,9 @@ fn reveal_with_system(path: &Path) -> Result<(), crate::AppError> {
 /// escape it, hence the trim (a bare `C:\` root keeps its separator).
 #[cfg(target_os = "windows")]
 fn select_argument(path: &Path) -> String {
-    let mut target = path.display().to_string();
+    // The switch also needs the native spelling even when the link did not use
+    // it — see [`native_separators`].
+    let mut target = native_separators(path);
     while target.len() > 3 && (target.ends_with('\\') || target.ends_with('/')) {
         target.pop();
     }
@@ -536,6 +557,26 @@ mod tests {
         assert_eq!(
             select_argument(Path::new(r"C:\a b\")),
             "/select,\"C:\\a b\""
+        );
+    }
+
+    /// Explorer answers a forward-slash target by opening Documents (verified
+    /// against a real file: `"/select,C:/…/pic.png"` lands on Documents, the
+    /// backslash spelling of the same path selects the file). A model writes
+    /// the link for a file it just saved the POSIX way, so the spelling has to
+    /// be normalized before the switch is built.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reveal_normalizes_forward_slashes() {
+        assert_eq!(
+            select_argument(Path::new("C:/Users/me/pic.png")),
+            "/select,\"C:\\Users\\me\\pic.png\""
+        );
+        // Mixed spellings and a trailing forward slash normalize the same way,
+        // and the fallback folder is opened with native separators too.
+        assert_eq!(
+            native_separators(Path::new("C:/Users/me\\pics/")),
+            "C:\\Users\\me\\pics\\"
         );
     }
 

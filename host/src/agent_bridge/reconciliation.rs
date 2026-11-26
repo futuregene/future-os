@@ -851,9 +851,14 @@ pub(super) const SETTLED_RUN_RECHECK_SECS: u64 = 7 * 24 * 60 * 60;
 /// (no IO) — [`reconcile_settled_run_once`] applies it.
 #[derive(Debug, PartialEq)]
 pub(super) enum SettledRunLedger {
-    /// The Agent still owns the run: it is executing it (`activeRun`), or
-    /// holding it in `queuedRuns` behind another run. A terminal row is wrong.
+    /// The Agent is executing this run (`activeRun`). A terminal row is wrong.
     Alive,
+    /// The Agent holds this run in `queuedRuns` behind the one executing. The row
+    /// is wrong too, but it must be restored as `queued`: that is the status
+    /// which keeps it off the "latest run" seat, so the conversation keeps
+    /// watching the run that is actually streaming instead of opening a live
+    /// preview for this one.
+    Held,
     /// The Agent's journal carries a durable terminal marker for this run.
     Terminal {
         /// The Agent's own terminal state (`run_terminal`'s mapped status).
@@ -878,10 +883,11 @@ pub(super) fn plan_settled_run_reconciliation(
         .get("activeRun")
         .and_then(|run| run.get("runId"))
         .and_then(|id| id.as_str());
-    if active_run_id == Some(canonical_run_id)
-        || queued_run_ids(state).any(|run_id| run_id == canonical_run_id)
-    {
+    if active_run_id == Some(canonical_run_id) {
         return SettledRunLedger::Alive;
+    }
+    if queued_run_ids(state).any(|run_id| run_id == canonical_run_id) {
+        return SettledRunLedger::Held;
     }
     if let Some(terminal) = state.get("requestedRun").filter(|value| value.is_object()) {
         return SettledRunLedger::Terminal {
@@ -997,21 +1003,17 @@ async fn reconcile_settled_run_once(
         return Ok(SettledRunOutcome::Unknown);
     }
     let state_value = future_rpc::decode::response_data(&state);
-    match plan_settled_run_reconciliation(&state_value, canonical_run_id) {
+    let ledger = plan_settled_run_reconciliation(&state_value, canonical_run_id);
+    match ledger {
+        // Which live shape the ledger reported is what the row has to wear:
+        // `running` for the run being executed, `queued` for the turn the Agent
+        // is holding behind it. Restoring both as `running` let a held turn take
+        // the "latest run" seat from the run that was streaming, and the open
+        // view then drew a second, empty reply bubble for it (2026-11-26).
         SettledRunLedger::Alive => {
-            let revived = crate::store::revive_unverified_run(&row.run_id)
-                .map_err(|e| format!("revive: {e}"))?;
-            if !revived {
-                // Another writer moved the row (a concurrent abort, or the
-                // pipeline settling it again): its state is no longer ours.
-                return Ok(SettledRunOutcome::Verified);
-            }
-            // The run is live again and has no pipeline owner of its own — the
-            // session observer projects it from the local cursor and settles the
-            // row at `agent_end`, exactly as for a reanimated interrupted run.
-            observer::ensure_observer_for_thread(&row.session_id, &row.thread_id)?;
-            Ok(SettledRunOutcome::Repaired("running"))
+            revive_settled_run(row, crate::store::RevivedRunState::Executing)
         }
+        SettledRunLedger::Held => revive_settled_run(row, crate::store::RevivedRunState::Queued),
         SettledRunLedger::Terminal {
             state, duration_ms, ..
         } if state == "completed" => {
@@ -1040,6 +1042,28 @@ async fn reconcile_settled_run_once(
             Ok(SettledRunOutcome::Verified)
         }
     }
+}
+
+/// Restore a row the Agent still owns, in the shape the ledger reported, and
+/// hand its projection to the session observer.
+fn revive_settled_run(
+    row: &crate::store::UnverifiedRun,
+    state: crate::store::RevivedRunState,
+) -> Result<SettledRunOutcome, String> {
+    let revived = crate::store::revive_unverified_run(&row.run_id, state)
+        .map_err(|e| format!("revive: {e}"))?;
+    if !revived {
+        // Another writer moved the row (a concurrent abort, or the pipeline
+        // settling it again): its state is no longer ours.
+        return Ok(SettledRunOutcome::Verified);
+    }
+    // The run is live again and has no pipeline owner of its own — the session
+    // observer projects it from the local cursor and settles the row at
+    // `agent_end`, exactly as for a reanimated interrupted run. A held turn
+    // needs it just as much: the observer is what projects the turn once the
+    // Agent starts it.
+    observer::ensure_observer_for_thread(&row.session_id, &row.thread_id)?;
+    Ok(SettledRunOutcome::Repaired(state.status()))
 }
 
 #[cfg(test)]
@@ -1334,6 +1358,60 @@ mod settled_run_tests {
             "running",
             "a row another writer owns is never rewritten from this pass"
         );
+    }
+
+    /// A settled row the Agent is *holding* is restored as `queued`, not
+    /// `running`.
+    ///
+    /// Both shapes mean "the Agent still owns this run", so both must be revived
+    /// from the row the desktop guessed wrong; only the status may differ, and
+    /// that difference is the whole fix. `running` would make this row the
+    /// conversation's "latest run" — the view then opens a live preview for a run
+    /// with no events, which is the second, empty 未来助手 bubble (2026-11-26).
+    #[tokio::test]
+    async fn a_settled_row_the_agent_holds_queued_is_revived_queued() {
+        let (_home, _thread, run_id) = settled_failure("reconcile-settled-held", "sess-held");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({"activeRun": {"runId": "run-ahead"},
+                "queuedRuns": [{"runId": run_id, "queuePosition": 1}]}),
+        );
+
+        let mut verified = HashSet::new();
+        reconcile_settled_runs(store::now_millis(), &mut verified).await;
+
+        let row = store::get_run(&run_id).expect("get").expect("some");
+        assert_eq!(
+            row.status,
+            store::QUEUED_RUN_STATUS,
+            "a held turn is queued again, not running: {row:?}"
+        );
+        assert_eq!(row.error_type.as_deref(), Some("queue_accepted"));
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.ended_at, None, "a queued row has not ended");
+    }
+
+    /// The contrast case: the same repair, for a row whose run the Agent is
+    /// actually executing. `running` is right here, and only here.
+    #[tokio::test]
+    async fn a_settled_row_the_agent_executes_is_revived_running() {
+        let (_home, _thread, run_id) =
+            settled_failure("reconcile-settled-executing", "sess-executing");
+        let mock = mock_agent();
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({"isStreaming": true, "activeRun": {"runId": run_id}}),
+        );
+
+        let mut verified = HashSet::new();
+        reconcile_settled_runs(store::now_millis(), &mut verified).await;
+
+        let row = store::get_run(&run_id).expect("get").expect("some");
+        assert_eq!(row.status, "running", "{row:?}");
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.error_type, None);
+        assert_eq!(row.ended_at, None);
     }
 
     /// The repair side of the same pass, for contrast: a row that *is* still

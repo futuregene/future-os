@@ -192,6 +192,52 @@ function validateRawSelection(
   if (total > MAX_MESSAGE_BYTES) throw new Error("attachment_total_size");
 }
 
+/** Where a picked document is copied before a message carries it. */
+const PICKED_FILE_CACHE = "futureos-picked-files";
+
+/**
+ * A picked document's bytes, in a file this app owns.
+ *
+ * The copy is the whole point: a document arrives as a provider URI, and what
+ * the provider can do with it is its own business. Some serve a seekable
+ * descriptor; some only a stream, which reports no size — and a size-driven copy
+ * then reports success having written nothing, while the upload's random-access
+ * handle reads zero bytes forever. Reading the whole document is the one read
+ * every provider supports, so it is the fallback when the copy comes back empty.
+ *
+ * A document that cannot be read at all is refused HERE, while the reader is
+ * still in the picker: the queued-message "+" cancels the waiting message before
+ * it re-sends, and a file that arrives unreadable after that cancel would cost
+ * the message as well as the file.
+ */
+async function cachePickedFile(source: File): Promise<File> {
+  const root = new Directory(Paths.cache, PICKED_FILE_CACHE);
+  if (!root.exists) root.create({ intermediates: true, idempotent: true });
+  const target = new File(
+    root,
+    `${Date.now().toString(36)}-${Crypto.randomUUID()}-${basename(source.name) || "attachment"}`,
+  );
+  try {
+    await source.copy(target, { overwrite: true });
+    // The result decides, not the call: see above.
+    if (target.exists && target.size > 0) return target;
+    const bytes = await source.bytes();
+    if (bytes.byteLength === 0) throw new Error("attachment_file_unreadable");
+    if (target.exists) target.delete();
+    await target.write(bytes);
+    if (!target.exists || target.size !== bytes.byteLength)
+      throw new Error("attachment_file_unreadable");
+    return target;
+  } catch (error) {
+    try { if (target.exists) target.delete(); } catch { /* keep the original failure */ }
+    // Anything the provider threw is an unreadable document as far as the reader
+    // is concerned; the named code is what the picker's toast can explain.
+    throw error instanceof Error && error.message === "attachment_file_unreadable"
+      ? error
+      : new Error("attachment_file_unreadable");
+  }
+}
+
 async function prepareFile(
   file: File,
   mimeType?: string | null,
@@ -202,14 +248,30 @@ async function prepareFile(
   const originalSize = file.size;
   const kind = isImage(file, mimeType) ? "image" : "file";
   if (kind === "file") {
-    return {
-      localUri: file.uri,
+    // A document comes from the system document picker, which answers with the
+    // provider's URI rather than a path (`content://` on Android). Everything
+    // after this reads the bytes through that provider, and a provider may serve
+    // only a stream: no size, and no random access, so each read of the upload's
+    // handle comes back empty and the transfer gives up on its first chunk.
+    // Images never meet this — the photo picker and the converter both hand back
+    // files the app owns — so a document is copied into the cache here, while the
+    // reader is still in the picker, and the message carries the copy.
+    const owned = /^file:/i.test(file.uri) ? file : await cachePickedFile(file);
+    const attachment: MobileAttachment = {
+      localUri: owned.uri,
       name: file.name,
       mimeType: mimeType || mimeFor(file.name),
       kind,
-      originalSize,
-      transferSize: originalSize,
+      // The copy, not the provider's announcement, is what will be sent — and an
+      // announced size the bytes do not match is an incomplete upload at the far
+      // end, which refuses the whole message.
+      originalSize: owned.size,
+      transferSize: owned.size,
     };
+    // The copy belongs to this attachment, exactly like a converted image.
+    if (owned !== file)
+      attachment.temporary = true;
+    return attachment;
   }
 
   const format = imageFormat(file, mimeType);
