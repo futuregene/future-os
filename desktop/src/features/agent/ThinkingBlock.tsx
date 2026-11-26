@@ -15,7 +15,12 @@ import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 type FetchState
   = | { status: "idle" }
     | { status: "loading" }
-    | { status: "loaded"; text: string }
+    /**
+     * `live` marks a body read while the block was still being written: it is a
+     * prefix of the thought, not the thought, so opening the row again once the
+     * block settles reads the complete text instead of keeping that snapshot.
+     */
+    | { status: "loaded"; text: string; live?: boolean }
     | { status: "unavailable" };
 
 /**
@@ -69,14 +74,16 @@ export const ThinkingBlock = memo(({
     setExpanded(true);
     if (hasText || !onLoad)
       return;
-    if (fetched.status === "loading" || fetched.status === "loaded")
+    if (fetched.status === "loading")
+      return;
+    if (fetched.status === "loaded" && !(fetched.live && !live))
       return;
     setFetched({ status: "loading" });
     void onLoad()
       .then((loaded) => {
         const trimmed = loaded?.trim() ?? "";
         setFetched(trimmed.length > 0
-          ? { status: "loaded", text: loaded ?? "" }
+          ? { status: "loaded", text: loaded ?? "", live: !!live }
           : { status: "unavailable" });
       })
       .catch(() => setFetched({ status: "unavailable" }));

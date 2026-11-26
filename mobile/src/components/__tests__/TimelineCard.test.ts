@@ -296,6 +296,34 @@ test("a streaming reply's reasoning is not cached by the row", async () => {
   expect(hasText("half a thought")).toBe(false);
 });
 
+// A block read while it was still being written came back as a prefix, so once
+// the reply settles the row reads it again rather than presenting that prefix as
+// the whole thought.
+test("a row read mid-stream reads again once the reply settles", async () => {
+  const load = jest.fn()
+    .mockResolvedValueOnce("a thought so far")
+    .mockResolvedValueOnce("a thought, complete");
+  const message = { segments: [thinking("k1", "")], runId: "run-1", streaming: true };
+  render(reply(message), { onResolveReasoning: load });
+  await act(async () => rowButton("chat.thinking").props.onPress());
+  expect(load).toHaveBeenLastCalledWith("run-1", 0, false);
+  expect(hasText("a thought so far")).toBe(true);
+
+  // The reply settles under the still-open row: its body stays as it was read.
+  act(() => {
+    tree.update(createElement(TimelineCard, {
+      item: reply({ ...message, streaming: false }),
+      onResolveReasoning: load,
+    }));
+  });
+  expect(hasText("a thought so far")).toBe(true);
+
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  await act(async () => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(load).toHaveBeenLastCalledWith("run-1", 0, true);
+  expect(hasText("a thought, complete")).toBe(true);
+});
+
 // The contrast: a body is what earns the chevron.
 test("a thinking row with a body still opens it", () => {
   render(reply({ segments: [thinking("k1", "why it broke")] }));

@@ -253,11 +253,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             // The reasoning sibling of `get_tool_call_args`: the lean lanes send
             // only a block's boundaries, so a row that is opened asks for the
             // body. `offset` carries which reasoning block of the run it is.
-            "get_reasoning" => state.session_manager.reasoning_block(
-                &cmd.session_id,
-                &cmd.run_id,
-                cmd.offset.unwrap_or(0),
-            ),
+            "get_reasoning" => reasoning_command(state, &cmd),
             _ => state.session_manager.tool_output(
                 &cmd.session_id,
                 &cmd.run_id,
@@ -553,5 +549,42 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "set_sandbox_policy" => settings::handle_set_sandbox_policy(&session, &cmd, id),
         "set_permission_level" => settings::handle_set_permission_level(&session, &cmd, id),
         _ => RpcResponse::build_fail(id, cmd_type, &format!("unknown command: {}", cmd_type)),
+    }
+}
+
+/// A reasoning block's text: the run's stored block when it has one, else the
+/// block the run is still writing.
+///
+/// A reasoning block reaches the store with the entry that carries it, at the end
+/// of the run, so a row opened while the model is still thinking has nothing
+/// stored to read — and was told there was nothing, although the text is already
+/// in the run's live projection (the fold a streaming reply is drawn from). This
+/// answers with what has been written so far, and leaves the stored shape of the
+/// reply (`runId`/`index`/`text`) alone.
+fn reasoning_command(state: &AppState, cmd: &RpcCommand) -> anyhow::Result<serde_json::Value> {
+    let index = cmd.offset.unwrap_or(0);
+    let stored = state
+        .session_manager
+        .reasoning_block(&cmd.session_id, &cmd.run_id, index)?;
+    if !stored["text"].is_null() {
+        return Ok(stored);
+    }
+    let broadcaster = {
+        let sessions = state.sessions.read();
+        sessions
+            .get(&cmd.session_id)
+            .map(|session| session.read().broadcaster.clone())
+    };
+    let live = broadcaster
+        .and_then(|broadcaster| broadcaster.live_reasoning_blocks(&cmd.run_id))
+        .and_then(|blocks| {
+            usize::try_from(index)
+                .ok()
+                .and_then(|index| blocks.get(index).cloned())
+                .flatten()
+        });
+    match live {
+        Some(text) => Ok(serde_json::json!({"runId": cmd.run_id, "index": index, "text": text})),
+        None => Ok(stored),
     }
 }
