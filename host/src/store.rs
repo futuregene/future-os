@@ -47,7 +47,8 @@ pub use cleanup::{
     archive_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
     list_unverified_settled_runs, reanimate_run, reconcile_orphan_chat_workspaces,
     reconcile_orphan_images, reconcile_orphan_review_repos, revive_unverified_run,
-    settle_interrupted_run_from_agent, settle_unverified_run_from_agent, ActiveRun, UnverifiedRun,
+    settle_interrupted_run_from_agent, settle_unverified_run_from_agent, ActiveRun,
+    RevivedRunState, UnverifiedRun,
 };
 pub use db::{
     app_images_root, future_dir, get_approval_request, get_run, remote_previews_dir,
