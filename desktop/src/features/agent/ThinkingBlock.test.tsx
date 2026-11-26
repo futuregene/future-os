@@ -157,3 +157,33 @@ it("reopening a row it already read does not ask again", async () => {
   expect(resolve).toHaveBeenCalledTimes(1);
   expect(container.textContent).toContain("because the test said so");
 });
+
+it("reads a block again once it settles, because what it read was a prefix", async () => {
+  // A block can be read while the model is still writing it, and what comes back
+  // is the thought so far. Keeping that body once the block settles would show a
+  // prefix as the whole thought, so opening the settled row reads it again.
+  const resolve = vi.fn()
+    .mockResolvedValueOnce("a thought so far")
+    .mockResolvedValueOnce("a thought, complete");
+  const thinkingLabel = i18n.t("activity.thinking", { ns: "agent" });
+  const streamingRow = () =>
+    Array.from(container.querySelectorAll("button")).find(
+      button => button.textContent?.includes(thinkingLabel) && button.querySelector(".lucide-brain"),
+    );
+  // The reasoning block is the reply's open slice, so the row is the one being
+  // written and its read is unsettled.
+  await render([prose, bodyless], resolve, { streaming: true });
+  await click(streamingRow()!);
+  expect(resolve).toHaveBeenCalledWith("run-9", 0, false);
+  expect(container.textContent).toContain("a thought so far");
+
+  // The reply settles under the still-open row: its body stays as it was read.
+  await render([prose, bodyless], resolve, { streaming: false });
+  expect(container.textContent).toContain("a thought so far");
+
+  await click(thoughtRow()!);
+  await click(thoughtRow()!);
+  expect(resolve).toHaveBeenCalledTimes(2);
+  expect(resolve).toHaveBeenLastCalledWith("run-9", 0, true);
+  expect(container.textContent).toContain("a thought, complete");
+});

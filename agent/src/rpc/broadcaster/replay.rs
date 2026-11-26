@@ -375,6 +375,37 @@ impl SseBroadcaster {
         Ok(snapshot)
     }
 
+    /// The reasoning blocks of the run this process is writing, in render order.
+    ///
+    /// Read from the live projection — the fold a streaming reply is drawn from,
+    /// so a block's place here is the index its row carries — and deliberately
+    /// *before* [`trim_projection`], which is what takes reasoning text out of a
+    /// snapshot meant for a client. A block only reaches the session store with
+    /// the entry that carries it, at the end of the run, so this is the only
+    /// place a row opened mid-reasoning can be answered from.
+    ///
+    /// `None` for a run this process is not writing (its text is stored, or its
+    /// kept projection is trimmed), and for one whose projection is a tail
+    /// rather than the whole run — an index found in a prefix would name a
+    /// different block.
+    ///
+    /// A run that has already ended is the same "not writing": from its terminal
+    /// on, the reply is the stored one, and an index is counted against that
+    /// record rather than against this fold.
+    pub(crate) fn live_reasoning_blocks(&self, run_id: &str) -> Option<Vec<Option<String>>> {
+        let run = self.run.lock();
+        if run.run_id != run_id || !run.projection_complete || run.projection_events.over_budget() {
+            return None;
+        }
+        let captured = CapturedSnapshot::capture(&run);
+        drop(run);
+        let events = captured.materialize().events;
+        if events.iter().any(|event| event.event_type == "agent_end") {
+            return None;
+        }
+        Some(super::reasoning::reasoning_blocks(&events))
+    }
+
     fn uncaptured_run_snapshot(&self, run_id: &str) -> anyhow::Result<RunProjectionSnapshot> {
         anyhow::ensure!(!run_id.is_empty(), "snapshot requires a run id");
         let run = self.run.lock();
