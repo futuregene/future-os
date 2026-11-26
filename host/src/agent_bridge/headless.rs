@@ -241,6 +241,26 @@ async fn run_prepared_prompt_inner(
     }
 
     match result {
+        // The Agent accepted this turn and is holding it behind the run ahead of
+        // it. The prompt path already settled the row to `queued` — the one
+        // status the rest of the app reads as "alive, but not the run this
+        // conversation is watching stream" — and the session observer owns it
+        // from here.
+        //
+        // This wrapper used to know only complete/incomplete, so it restamped
+        // that row `failed` a moment later. The settled-run repair then read the
+        // Agent's ledger, saw the run alive, and revived it to `running`
+        // (`store::revive_unverified_run` had no other shape to restore) — which
+        // made the queued row win every "latest run" read and the open
+        // conversation draw a second, empty "thinking" bubble for a turn that had
+        // not started (2026-11-26: two 未来助手 bubbles under one prompt).
+        //
+        // Still no `Ok`: the turn is owed, so a caller that only saw success must
+        // not record it as a finished answer — but nothing failed, so the row and
+        // its failure markers stay exactly as the prompt path left them.
+        Ok(response) if response.termination_kind.as_deref() == Some("run_queued") => Err(
+            crate::Error::Message(super::stream::termination_error(Some("run_queued")).to_string()),
+        ),
         // Stream closed before `agent_end`: the text is a truncated prefix, not
         // a finished answer. Persist it (so the partial isn't lost) but settle
         // the run as not-completed — and *return* that failure, because a caller
@@ -612,6 +632,90 @@ mod tests {
             .expect("some");
         assert_eq!(run.status, "cancelled");
         assert_eq!(run.error_type.as_deref(), Some("cancelled"));
+    }
+
+    /// A remote (mobile) prompt the Agent accepts while another run is executing
+    /// is *queued* — the one status the rest of the app reads as "alive, but not
+    /// the run this conversation is watching stream".
+    ///
+    /// This wrapper used to know only complete/incomplete, so it restamped the
+    /// row `failed` immediately after the prompt path had written `queued`; the
+    /// settled-run repair then revived it to `running`, and the open
+    /// conversation opened a second, empty "thinking" bubble for a turn that had
+    /// not started (2026-11-26: two 未来助手 bubbles under one prompt, the lower
+    /// one counting from the queued row's own start).
+    ///
+    /// Reverting the `run_queued` arm in `run_prepared_prompt_inner` turns this
+    /// red: the row comes back `failed` with error_type `run_queued`.
+    #[tokio::test]
+    async fn a_remote_prompt_queued_behind_a_running_run_stays_queued() {
+        let home = TestHome::new("headless-queued");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-queued"));
+        mock.push_data(
+            "get_state",
+            serde_json::json!({ "sessionId": "sess-queued", "cwd": workspace.path }),
+        );
+        let prepared = prepare_prompt_persisted_with_trigger(
+            &thread,
+            "second question".to_string(),
+            None,
+            None,
+            vec![],
+            Some("remote-command-queued".to_string()),
+        )
+        .expect("prepare");
+        let run_id = prepared.run_id.clone();
+
+        // The Agent accepted the prompt and is holding it behind an older run:
+        // a queued run has no execution epoch, so the attach is refused.
+        mock.push_stream(StreamScript::AttachError(
+            tonic::Code::FailedPrecondition,
+            "run is not the active run",
+        ));
+        mock.push_run_state(
+            &run_id,
+            serde_json::json!({"queuedRuns": [{"runId": run_id, "queuePosition": 1}]}),
+        );
+        // Its user entry is already durable on the Agent; the queued path reads
+        // it back instead of inventing a stub.
+        mock.push_typed_data(
+            "get_session_entries",
+            serde_json::json!({ "entries": [{
+                "id": "e-queued",
+                "kind": "user",
+                "role": "user",
+                "createdAtMs": 1000,
+                "runId": run_id,
+                "blocks": [{"kind": "text", "text": "second question"}],
+            }]}),
+        );
+
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let execution = tokio::spawn(run_prepared_prompt_with_acceptance(prepared, accepted_tx));
+        accepted_rx
+            .await
+            .expect("acceptance channel")
+            .expect("durable receipt");
+        // The turn is still owed, so a caller still cannot record a finished
+        // answer — but the row must not read as a failure either.
+        assert!(execution.await.expect("join").is_err());
+
+        let run = store::get_run(&run_id).expect("get run").expect("some");
+        assert_eq!(
+            run.status,
+            store::QUEUED_RUN_STATUS,
+            "a held turn is queued, not failed: {:?} / {:?}",
+            run.error_type,
+            run.error_message
+        );
+        assert!(
+            run.error_message.is_none(),
+            "no failure is recorded for a turn that has not run yet: {:?}",
+            run.error_message
+        );
+        assert!(run.ended_at.is_none(), "a queued row has not ended");
     }
 
     #[tokio::test]
