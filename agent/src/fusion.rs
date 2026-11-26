@@ -853,7 +853,7 @@ impl crate::types::LLMProvider for ContextProvider {
             );
         }
         self.provider
-            .stream_model_with_output_limit(request, output.min(i32::MAX as usize) as i32)
+            .stream_model_with_fusion_output_limit(request, output.min(i32::MAX as usize) as i32)
             .await
     }
 }

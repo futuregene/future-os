@@ -1190,10 +1190,6 @@ impl Workbench {
         };
         let commands: Vec<(PaletteMatch, PaletteRow)> = COMMANDS
             .iter()
-            .filter(|(command, _)| {
-                !crate::version::is_release()
-                    || !matches!(*command, "/fusion" | "/fusion-log" | "/fusion-settings")
-            })
             .filter(|(command, _)| *command != "/fusion" || data.fusion_enabled != Some(false))
             .filter_map(|(command, key)| {
                 let description = t(self.lang, *key);
@@ -5498,8 +5494,8 @@ mod tests {
                 .any(|row| matches!(row, PaletteRow::Command { command, .. } if *command == name))
         };
         assert!(!has("/fusion"));
-        assert_eq!(has("/fusion-settings"), !crate::version::is_release());
-        assert_eq!(has("/fusion-log"), !crate::version::is_release());
+        assert!(has("/fusion-settings"));
+        assert!(has("/fusion-log"));
     }
 
     #[test]

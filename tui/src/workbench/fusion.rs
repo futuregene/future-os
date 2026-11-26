@@ -3,6 +3,12 @@ use super::i18n::{t, Key, Language};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const LEGACY_PANEL_MODELS: [&str; 3] = [
+    "future/deepseek-flash",
+    "future/glm-5.3-flash",
+    "future/qwen3.7-plus",
+];
+
 fn state(step: &Value) -> Key {
     if step["failure_kind"] == "budget_reserved" {
         return Key::FusionSkipped;
@@ -110,7 +116,7 @@ pub(super) fn progress(data: &Value, lang: Language) -> String {
         }));
         roles
     } else {
-        future_fusion::PANEL_MODELS
+        LEGACY_PANEL_MODELS
             .iter()
             .map(|model| (None, model.to_string(), None))
             .collect()

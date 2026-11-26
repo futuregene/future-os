@@ -11,7 +11,7 @@ import { PeerIconChip } from "../../remote/PeerIconChip";
 import { readableDeviceName } from "../../remote/deviceName";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
-import { IS_RELEASE, VERSION } from "../../version.generated";
+import { VERSION } from "../../version.generated";
 import { openPrivacyPolicy } from "../../config/legal";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../theme/ThemeContext";
@@ -213,7 +213,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
       case "tasks":
         return tasksSupported;
       case "fusion":
-        return !IS_RELEASE && remote.capabilities?.has("fusion_settings_v1") === true;
+        return remote.capabilities?.has("fusion_settings_v1") === true;
       default:
         return true;
     }
@@ -300,7 +300,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
       case "providerForm":
         return <CustomProviderPage key={page.provider?.id ?? "new"} onDone={goBackFromEditor} provider={page.provider} />;
       case "fusion":
-        return !IS_RELEASE ? <FusionSettingsPage /> : null;
+        return <FusionSettingsPage />;
       case "models":
         return enabled
           ? <ModelsSettingsPage settings={resource.data} disabled={disabled} onChange={patch => void changeSettings(patch)} />
@@ -503,7 +503,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
               <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.reply")} onPress={() => push({ name: "reply" })} />
               <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.storage")} onPress={() => push({ name: "storage" })} />
               <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
-              {!IS_RELEASE ? <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} /> : null}
+              <SettingsLink disabled={!remote.desktopOnline || !remote.capabilities.has("fusion_settings_v1")} label={t("desktopSettings.fusion")} description={!remote.capabilities.has("fusion_settings_v1") ? t("desktopSettings.updateDesktop") : undefined} onPress={() => push({ name: "fusion" })} />
               <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />
               <SettingsLink disabled={!remote.desktopOnline || !skillsSupported} label={t("desktopSettings.skills")} onPress={() => push({ name: "skills" })} />
               <SettingsLink disabled={!remote.desktopOnline || !tasksSupported} label={t("desktopSettings.tasks")} onPress={() => push({ name: "tasks" })} />
