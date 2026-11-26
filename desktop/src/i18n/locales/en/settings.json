@@ -471,6 +471,9 @@
     "save": "Save model configuration",
     "saving": "Saving…",
     "saved": "Saved",
+    "unsaved": "Unsaved changes",
+    "unsavedSubject": "Fusion model configuration",
+    "saveHint": "Changes apply only after you save.",
     "reload": "Reload",
     "loading": "Loading Fusion settings…",
     "loadFailed": "Could not load Fusion settings. Please retry.",
@@ -479,6 +482,14 @@
     "participantCount": "Choose 2–5 participants.",
     "participantRequired": "Choose a model for every participant.",
     "thinkingRequired": "Choose a thinking level for every role."
+  },
+  "unsavedGuard": {
+    "title": "Save your changes?",
+    "body": "{{subject}} has edits you haven't saved. Leaving now discards them.",
+    "save": "Save and leave",
+    "saving": "Saving…",
+    "discard": "Discard changes",
+    "cancel": "Keep editing"
   },
   "alerts": {
     "section": "Alerts"

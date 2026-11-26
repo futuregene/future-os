@@ -2,6 +2,7 @@ import type { FusionConfiguration, FusionModelConfig, FusionSettings, FusionSett
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ProvidersView } from "../../integrations/agent/providers";
 import type { RemotePeer } from "../remote-peer/remotePeerClient";
+import type { UnsavedGuardApi } from "./unsavedGuard";
 import { fusionSettingsIssue, newFusionParticipant } from "@future-os/thread-projection";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { useCallback, useId, useMemo, useState } from "react";
@@ -12,11 +13,13 @@ import { localizedModelDescription, modelKey, modelThinkingLevels } from "../../
 import { listAgentProviders } from "../../integrations/agent/providers";
 import { getFusionSettings, updateFusionSettings } from "../../integrations/fusion/settings";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { cn } from "../../lib/cn";
 import { useAsyncResource } from "../../lib/useAsyncResource";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { useHostCatalogueInvalidation } from "../remote-peer/remoteHostCatalog";
 import { listRemoteProviders, requestRemotePeer } from "../remote-peer/remotePeerClient";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
+import { useUnsavedGuard } from "./unsavedGuard";
 
 const localModels = () => invokeCommand<AgentModelOption[]>("list_agent_models");
 interface Source {
@@ -142,7 +145,7 @@ function ModelRow({ title, value, models, providerNames, disabled, onChange, onR
   );
 }
 
-function Form({ snapshot, models, providerNames, save, reload, disabled }: { snapshot: FusionSettings; models: AgentModelOption[]; providerNames: Record<string, string>; save: Source["save"]; reload: () => void; disabled: boolean }) {
+function Form({ snapshot, models, providerNames, save, reload, disabled, guard }: { snapshot: FusionSettings; models: AgentModelOption[]; providerNames: Record<string, string>; save: Source["save"]; reload: () => void; disabled: boolean; guard: UnsavedGuardApi | null }) {
   const { t } = useTranslation("settings");
   const [saved, setSaved] = useState(snapshot);
   const [draft, setDraft] = useState<FusionConfiguration>(snapshot.configuration);
@@ -154,9 +157,9 @@ function Form({ snapshot, models, providerNames, save, reload, disabled }: { sna
   const issue = fusionSettingsIssue(draft);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved.configuration);
   const locked = disabled || busy || conflict;
-  async function persist(configuration?: FusionConfiguration, enabled?: boolean) {
+  async function persist(configuration?: FusionConfiguration, enabled?: boolean): Promise<boolean> {
     if (locked)
-      return;
+      return false;
     setBusy(true);
     setError(null);
     setDone(false);
@@ -168,13 +171,23 @@ function Form({ snapshot, models, providerNames, save, reload, disabled }: { sna
         setDone(true);
       }
       reload();
+      return true;
     }
     catch (error) {
       setError(error instanceof Error ? error.message : String(error));
       reload();
+      return false;
     }
     finally { setBusy(false); }
   }
+  // Leaving the page (another settings tab, the backdrop, Escape, "back") asks
+  // first: this form keeps a draft, and a draft dropped on the way out is
+  // indistinguishable from a configuration the user believes was applied.
+  useUnsavedGuard(guard, {
+    subject: t("fusion.unsavedSubject"),
+    isDirty: () => dirty,
+    save: () => (issue ? Promise.resolve(false) : persist(draft)),
+  });
   return (
     <div className="space-y-5">
       <SettingsList>
@@ -253,15 +266,35 @@ function Form({ snapshot, models, providerNames, save, reload, disabled }: { sna
       </Button>
       {issue ? <p className="text-xs text-danger" role="alert">{t(`fusion.${issue}`)}</p> : null}
       {error ? <p className="text-xs text-danger" role="alert">{error}</p> : null}
-      <div className="flex items-center gap-3">
-        <Button disabled={locked || !!issue || !dirty} onClick={() => void persist(draft)}>{busy ? t("fusion.saving") : t("fusion.save")}</Button>
-        {done ? <span role="status" className="text-xs text-ink-muted">{t("fusion.saved")}</span> : null}
+      {/* Pinned to the bottom of the page. It used to be the last thing in a
+          long scroll — a small secondary button under the participant list,
+          which read as a footnote rather than the step that applies the change.
+          The bar says where the draft stands and keeps the action in view. */}
+      <div className="sticky bottom-0 z-10 flex items-center justify-between gap-4 rounded-lg border border-line-soft bg-surface/95 py-2 pl-3 pr-2 shadow-md backdrop-blur">
+        <p
+          aria-live="polite"
+          className={cn(
+            "min-w-0 text-xs leading-5",
+            dirty && !issue ? "font-medium text-ink" : "text-ink-muted",
+          )}
+        >
+          {dirty && !issue
+            ? t("fusion.unsaved")
+            : done ? t("fusion.saved") : t("fusion.saveHint")}
+        </p>
+        <Button
+          variant="primary"
+          disabled={locked || !!issue || !dirty}
+          onClick={() => void persist(draft)}
+        >
+          {busy ? t("fusion.saving") : t("fusion.save")}
+        </Button>
       </div>
     </div>
   );
 }
 
-export function FusionSettingsPage({ source = LOCAL, disabled = false }: { source?: Source; disabled?: boolean }) {
+export function FusionSettingsPage({ source = LOCAL, disabled = false, guard = null }: { source?: Source; disabled?: boolean; guard?: UnsavedGuardApi | null }) {
   const { t } = useTranslation("settings");
   const load = useCallback(async () => {
     const [settings, models, providers] = await Promise.all([source.load(), source.models(), source.providers().catch(() => null)]);
@@ -272,7 +305,7 @@ export function FusionSettingsPage({ source = LOCAL, disabled = false }: { sourc
   useTauriEvent("app_settings_changed", resource.reload);
   useTauriEvent("provider-config-changed", resource.reload);
   return resource.data
-    ? <Form snapshot={resource.data.settings} models={resource.data.models} providerNames={resource.data.providerNames} save={source.save} reload={resource.reload} disabled={disabled} />
+    ? <Form snapshot={resource.data.settings} models={resource.data.models} providerNames={resource.data.providerNames} save={source.save} reload={resource.reload} disabled={disabled} guard={guard} />
     : (
         <div className="space-y-2 text-sm text-ink-muted">
           <p>{resource.error ? t("fusion.loadFailed") : t("fusion.loading")}</p>
@@ -281,7 +314,7 @@ export function FusionSettingsPage({ source = LOCAL, disabled = false }: { sourc
       );
 }
 
-export function RemoteFusionSettingsPage({ peer }: { peer: RemotePeer }) {
+export function RemoteFusionSettingsPage({ peer, guard = null }: { peer: RemotePeer; guard?: UnsavedGuardApi | null }) {
   const [revision, setRevision] = useState(0);
   useHostCatalogueInvalidation(peer.desktopId, (domain) => {
     if (domain === "settings" || domain === "models")
@@ -292,5 +325,5 @@ export function RemoteFusionSettingsPage({ peer }: { peer: RemotePeer }) {
   const models = useCallback(() => requestRemotePeer<{ models: AgentModelOption[] }>(peer.desktopId, { type: "list_settings_models" }, "list").then(value => value.models), [peer.desktopId]);
   const providers = useCallback(() => listRemoteProviders(peer.desktopId), [peer.desktopId]);
   const source = useMemo(() => ({ load, save, models, providers, revision }), [load, save, models, providers, revision]);
-  return <FusionSettingsPage key={`${peer.desktopId}:${peer.bridgeInstanceId}`} source={source} disabled={!peer.connected || peer.control === "standby"} />;
+  return <FusionSettingsPage key={`${peer.desktopId}:${peer.bridgeInstanceId}`} source={source} disabled={!peer.connected || peer.control === "standby"} guard={guard} />;
 }
