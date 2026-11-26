@@ -21,6 +21,11 @@ from future_runner import Future
 FRAGMENT = "思考🙂" * 2048
 CHUNKS = 64
 ANSWER = "FINAL_ANSWER: 7"
+PANEL_TIMEOUT_SECS = 5
+PANEL_TIMEOUT_SUPPORT = {
+    model: f"Fixture participant {model} derives 7 from the supplied request."
+    for model in ("a", "b")
+}
 
 
 def free_endpoint():
@@ -52,6 +57,11 @@ def main():
         "--check-idle",
         action="store_true",
         help="exercise a two-second fixture-only inactivity threshold",
+    )
+    parser.add_argument(
+        "--check-panel-timeout",
+        action="store_true",
+        help="run only the panel timeout check with a continuously reasoning participant",
     )
     parser.add_argument(
         "--check-evidence",
@@ -100,6 +110,7 @@ def main():
     stalled = set()
     exhausted = set()
     report_recovery_requests = []
+    panel_timeout_probe = {"enabled": False, "reasoning_chunks": 0}
     source_probe = {"enabled": False, "reviews": []}
     decision_probe = {"enabled": False, "attempts": []}
     lineage_probe = {"previous_run_id": None}
@@ -294,6 +305,18 @@ def main():
                                 {"model": model, "monotonic": time.monotonic()}
                             )
                         barrier.wait()
+                        if panel_timeout_probe["enabled"] and model == "c":
+                            try:
+                                for _ in range(8 * PANEL_TIMEOUT_SECS):
+                                    emit(
+                                        {
+                                            "reasoning_content": "Still working on the fixture."
+                                        }
+                                    )
+                                    panel_timeout_probe["reasoning_chunks"] += 1
+                                    time.sleep(0.25)
+                            except (BrokenPipeError, ConnectionResetError):
+                                return
                     if model in stalled and "\nReview packet:\n" not in prompt:
                         try:
                             for _ in range(40):
@@ -325,7 +348,12 @@ def main():
                     answer = json.dumps(
                         {
                             "answer": ANSWER,
-                            "support": "The supplied request asks to return 7.",
+                            "support": (
+                                PANEL_TIMEOUT_SUPPORT[model]
+                                if panel_timeout_probe["enabled"]
+                                and model in PANEL_TIMEOUT_SUPPORT
+                                else "The supplied request asks to return 7."
+                            ),
                             "unresolved": (
                                 ["Check the supplied source before finalizing"]
                                 if (
@@ -381,6 +409,22 @@ def main():
                             else []
                         ),
                     }
+                    if panel_timeout_probe["enabled"]:
+                        value["decision_audit"]["dispositions"] = [
+                            {
+                                "id": key,
+                                "decision": "accepted",
+                                "reason": "The review confirms the requested value.",
+                                "effect": "Deliver 7.",
+                                "basis": [
+                                    {
+                                        "source_id": objection["report_source"],
+                                        "source_path": "/current_answer",
+                                    }
+                                ],
+                            }
+                            for key, objection in packet["objections"].items()
+                        ]
                     if local_repair["enabled"]:
                         if repaired:
                             assert (
@@ -501,7 +545,7 @@ def main():
             "run_timeout_secs": 2700,
         },
     }
-    if args.check_idle:
+    if args.check_idle or args.check_panel_timeout:
         settings["configuration"].update(
             version=3, step_timeout_secs=0, run_timeout_secs=0, idle_timeout_secs=2
         )
@@ -545,7 +589,7 @@ def main():
                             + str(home / "host.log")
                         )
                     time.sleep(0.2)
-            if args.check_idle:
+            if args.check_idle or args.check_panel_timeout:
                 configured = client.call(["fusion", "settings", "--json"])
                 assert configured["configuration"]["step_timeout_secs"] == 0
                 assert configured["configuration"]["run_timeout_secs"] == 0
@@ -581,6 +625,78 @@ def main():
                     "eventJournalError"
                 )
                 return ack
+
+            if args.check_panel_timeout:
+                configured = client.call(
+                    [
+                        "fusion",
+                        "settings",
+                        "--panel-timeout",
+                        str(PANEL_TIMEOUT_SECS),
+                        "--json",
+                    ]
+                )
+                assert (
+                    configured["configuration"]["panel_timeout_secs"]
+                    == PANEL_TIMEOUT_SECS
+                ), configured
+                c_requests = counts["c"]
+                request_count = len(configured_requests)
+                panel_timeout_probe["enabled"] = True
+                try:
+                    advanced = run("parent", fusion=True)
+                finally:
+                    panel_timeout_probe["enabled"] = False
+                client.call(["fusion", "settings", "--panel-timeout", "0", "--json"])
+                discussion = client.call(
+                    ["fusion", "show", advanced["sessionId"], "--json"]
+                )
+                write_json(home / "panel-timeout-discussion.json", discussion)
+                panel_run = discussion["run"]
+                report = panel_run["report"]
+                assert panel_run["status"] == "completed", panel_run
+                assert panel_run["result"]["final_answer"] == ANSWER, panel_run
+                assert sorted(report["analysis_participants"]) == ["P1", "P2"], report
+                assert "synthesizing" in report["completed_phases"], report
+                failed = [
+                    step for step in discussion["steps"] if step["status"] == "failed"
+                ]
+                assert [
+                    (step["participant"], step["phase"], step.get("failure_kind"))
+                    for step in failed
+                ] == [("P3", "analyzing", "panel_timeout")], failed
+                assert counts["c"] == c_requests + 1, counts
+                assert panel_timeout_probe["reasoning_chunks"] > 1, panel_timeout_probe
+                moderator_prompts = [
+                    "\n".join(strings(request["messages"]))
+                    for request in configured_requests[request_count:]
+                    if request["model"] == "moderator"
+                ]
+                assert any(
+                    "\nIndependent analyses:\n" in prompt
+                    and all(
+                        support in prompt for support in PANEL_TIMEOUT_SUPPORT.values()
+                    )
+                    for prompt in moderator_prompts
+                ), moderator_prompts
+                evidence["panel_timeout"] = {
+                    "phase_timeout_seconds": PANEL_TIMEOUT_SECS,
+                    "reasoning_chunks": panel_timeout_probe["reasoning_chunks"],
+                    "timed_out_participant": "P3",
+                    "analysis_participants": report["analysis_participants"],
+                    "final_answer": panel_run["result"]["final_answer"],
+                }
+                write_json(home / "verification.json", evidence)
+                print(
+                    json.dumps(
+                        {
+                            "evidence": str(home / "verification.json"),
+                            "results": evidence,
+                        }
+                    ),
+                    flush=True,
+                )
+                return
 
             bypass = client.call(
                 [

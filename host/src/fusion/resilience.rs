@@ -37,55 +37,90 @@ const PANEL_WINDOW: Duration = Duration::from_secs(10 * 60);
 const PANEL_LAST_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// Hard bound on that wait, however long the pending participants keep talking.
 const PANEL_CEILING: Duration = Duration::from_secs(30 * 60);
+/// A participant's minimum opportunity to run under the default panel wait.
+const PANEL_MINIMUM_RUNTIME: Duration = Duration::from_secs(30 * 60);
 /// How often a waiting phase re-reads content progress to recompute its cutoff.
 pub(super) const PANEL_POLL: Duration = Duration::from_secs(15);
 
-/// Content progress shared by the participants of one panel. A model that is
-/// still producing reasoning or text is working, not hung, so the wait is
-/// anchored to the latest progress instead of to the fastest answer.
+#[derive(Default)]
+struct PanelProgress {
+    last_content: Option<tokio::time::Instant>,
+    started: BTreeMap<String, tokio::time::Instant>,
+}
+
+/// Start times and content progress shared by the participants of one panel.
 #[derive(Clone, Default)]
-pub(super) struct ProgressClock(Arc<Mutex<Option<tokio::time::Instant>>>);
+pub(super) struct ProgressClock(Arc<Mutex<PanelProgress>>);
 
 impl ProgressClock {
     pub fn reset(&self) {
-        *self.lock() = None;
+        *self.lock() = PanelProgress::default();
     }
     pub fn touch(&self) {
-        *self.lock() = Some(tokio::time::Instant::now());
+        self.lock().last_content = Some(tokio::time::Instant::now());
     }
-    pub fn last(&self) -> Option<tokio::time::Instant> {
-        *self.lock()
+    pub fn participant_started(&self, participant: &str, now: tokio::time::Instant) {
+        self.lock().started.entry(participant.into()).or_insert(now);
     }
-    fn lock(&self) -> std::sync::MutexGuard<'_, Option<tokio::time::Instant>> {
+    pub fn participant_finished(&self, participant: &str) {
+        self.lock().started.remove(participant);
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, PanelProgress> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-#[derive(Default)]
-pub(super) struct PanelDeadline(Option<tokio::time::Instant>);
+pub(super) struct PanelDeadline {
+    phase_deadline: Option<tokio::time::Instant>,
+    first_finished: Option<tokio::time::Instant>,
+}
 
 impl PanelDeadline {
-    /// The first terminal result (an answer or a failure) starts the wait.
-    pub fn participant_finished(&mut self, now: tokio::time::Instant) {
-        self.0.get_or_insert(now);
+    pub fn new(phase_deadline: Option<tokio::time::Instant>) -> Self {
+        Self {
+            phase_deadline,
+            first_finished: None,
+        }
     }
 
-    /// `None` until a participant has finished. Afterwards the earlier of the
-    /// silence window (measured from the latest content progress, so an active
-    /// participant keeps its own slot open) and the hard ceiling.
-    pub fn cutoff(
+    /// The first terminal result (an answer or a failure) starts the progress-based wait.
+    pub fn participant_finished(&mut self, now: tokio::time::Instant) {
+        self.first_finished.get_or_insert(now);
+    }
+
+    pub fn is_armed(&self) -> bool {
+        self.phase_deadline.is_some() || self.first_finished.is_some()
+    }
+
+    pub fn cutoff(&self, pending: usize, progress: &ProgressClock) -> Option<tokio::time::Instant> {
+        let progress = progress.lock();
+        let legacy = self.progress_cutoff(pending, progress.last_content);
+        if let Some(phase_deadline) = self.phase_deadline {
+            return Some(legacy.map_or(phase_deadline, |deadline| deadline.min(phase_deadline)));
+        }
+        // A queued participant has not had an opportunity to run yet.
+        if progress.started.len() != pending {
+            return None;
+        }
+        let latest_start = *progress.started.values().max()?;
+        Some(legacy?.max(latest_start + PANEL_MINIMUM_RUNTIME))
+    }
+
+    /// The silence window and ceiling start with the first terminal participant.
+    fn progress_cutoff(
         &self,
         pending: usize,
         progress: Option<tokio::time::Instant>,
     ) -> Option<tokio::time::Instant> {
-        let first = self.0?;
-        let window = if pending <= 1 {
-            PANEL_LAST_WINDOW
-        } else {
-            PANEL_WINDOW
-        };
-        let anchor = progress.map_or(first, |at| at.max(first));
-        Some((anchor + window).min(first + PANEL_CEILING))
+        self.first_finished.map(|first| {
+            let window = if pending <= 1 {
+                PANEL_LAST_WINDOW
+            } else {
+                PANEL_WINDOW
+            };
+            let anchor = progress.map_or(first, |at| at.max(first));
+            (anchor + window).min(first + PANEL_CEILING)
+        })
     }
 }
 
@@ -370,37 +405,37 @@ mod tests {
     fn panel_wait_starts_after_any_terminal_result_and_never_extends() {
         let now = tokio::time::Instant::now();
         let minutes = |count: u64| Duration::from_secs(count * 60);
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
 
-        assert_eq!(deadline.cutoff(3, None), None);
+        assert_eq!(deadline.progress_cutoff(3, None), None);
         deadline.participant_finished(now);
-        assert_eq!(deadline.cutoff(3, None), Some(now + minutes(10)));
+        assert_eq!(deadline.progress_cutoff(3, None), Some(now + minutes(10)));
         deadline.participant_finished(now + minutes(1));
-        assert_eq!(deadline.cutoff(3, None), Some(now + minutes(10)));
+        assert_eq!(deadline.progress_cutoff(3, None), Some(now + minutes(10)));
     }
 
     #[test]
     fn content_progress_keeps_a_working_panel_alive_up_to_the_ceiling() {
         let now = tokio::time::Instant::now();
         let minutes = |count: u64| Duration::from_secs(count * 60);
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
         deadline.participant_finished(now);
 
         // The run that exposed this: two panelists were still reasoning ten
         // minutes after the fastest answer and were cut mid-work.
         assert_eq!(
-            deadline.cutoff(2, Some(now + minutes(8))),
+            deadline.progress_cutoff(2, Some(now + minutes(8))),
             Some(now + minutes(18))
         );
         // Progress that stopped long ago does not buy more time.
         assert_eq!(
-            deadline.cutoff(2, Some(now + minutes(2))),
+            deadline.progress_cutoff(2, Some(now + minutes(2))),
             Some(now + minutes(12))
         );
-        assert_eq!(deadline.cutoff(2, None), Some(now + minutes(10)));
+        assert_eq!(deadline.progress_cutoff(2, None), Some(now + minutes(10)));
         // A panel that never stops producing is still bounded.
         assert_eq!(
-            deadline.cutoff(2, Some(now + minutes(29))),
+            deadline.progress_cutoff(2, Some(now + minutes(29))),
             Some(now + minutes(30))
         );
     }
@@ -408,30 +443,106 @@ mod tests {
     #[test]
     fn the_last_pending_participant_tightens_the_deadline_even_after_a_failure() {
         let now = tokio::time::Instant::now();
-        let mut deadline = PanelDeadline::default();
+        let mut deadline = PanelDeadline::new(None);
         deadline.participant_finished(now);
         deadline.participant_finished(now + Duration::from_secs(120));
         assert_eq!(
-            deadline.cutoff(1, None),
+            deadline.progress_cutoff(1, None),
             Some(now + Duration::from_secs(300))
         );
 
-        let mut two_participants = PanelDeadline::default();
+        let mut two_participants = PanelDeadline::new(None);
         two_participants.participant_finished(now);
         assert_eq!(
-            two_participants.cutoff(2, None),
+            two_participants.progress_cutoff(2, None),
             Some(now + Duration::from_secs(600))
         );
     }
 
     #[test]
+    fn configured_deadline_takes_precedence_over_the_default_minimum() {
+        let now = tokio::time::Instant::now();
+        let limit = now + Duration::from_secs(900);
+        let progress = ProgressClock::default();
+        let mut deadline = PanelDeadline::new(Some(limit));
+
+        assert_eq!(deadline.cutoff(3, &progress), Some(limit));
+        progress.participant_started("P2", now);
+        progress.participant_started("P3", now);
+
+        deadline.participant_finished(now + Duration::from_secs(60));
+        assert_eq!(
+            deadline.cutoff(2, &progress),
+            Some(now + Duration::from_secs(660))
+        );
+        progress.lock().last_content = Some(now + Duration::from_secs(899));
+        assert_eq!(deadline.cutoff(2, &progress), Some(limit));
+    }
+
+    #[test]
+    fn an_early_finish_keeps_thirty_minutes_for_each_pending_participant() {
+        let now = tokio::time::Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let progress = ProgressClock::default();
+        let mut deadline = PanelDeadline::new(None);
+        for participant in ["P1", "P2", "P3"] {
+            progress.participant_started(participant, now);
+        }
+        assert_eq!(deadline.cutoff(3, &progress), None);
+
+        progress.participant_finished("P1");
+        deadline.participant_finished(now + minutes(1));
+        assert_eq!(deadline.cutoff(2, &progress), Some(now + minutes(30)));
+
+        progress.participant_finished("P2");
+        deadline.participant_finished(now + minutes(2));
+        assert_eq!(deadline.cutoff(1, &progress), Some(now + minutes(30)));
+    }
+
+    #[test]
+    fn a_queued_or_late_participant_keeps_its_first_start_until_it_finishes() {
+        let now = tokio::time::Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let progress = ProgressClock::default();
+        let mut deadline = PanelDeadline::new(None);
+        progress.participant_started("P2", now);
+        deadline.participant_finished(now + minutes(1));
+        assert!(deadline.is_armed());
+        assert_eq!(deadline.cutoff(2, &progress), None);
+
+        progress.participant_started("P3", now + minutes(4));
+        assert_eq!(deadline.cutoff(2, &progress), Some(now + minutes(34)));
+        progress.participant_started("P3", now + minutes(6));
+        assert_eq!(deadline.cutoff(2, &progress), Some(now + minutes(34)));
+
+        progress.participant_finished("P3");
+        assert_eq!(deadline.cutoff(1, &progress), Some(now + minutes(30)));
+    }
+
+    #[test]
+    fn recent_output_and_the_old_ceiling_still_apply_after_the_minimum() {
+        let now = tokio::time::Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let progress = ProgressClock::default();
+        let mut deadline = PanelDeadline::new(None);
+        progress.participant_started("P2", now);
+        deadline.participant_finished(now + minutes(20));
+        progress.lock().last_content = Some(now + minutes(29));
+        assert_eq!(deadline.cutoff(1, &progress), Some(now + minutes(34)));
+        progress.lock().last_content = Some(now + minutes(49));
+        assert_eq!(deadline.cutoff(1, &progress), Some(now + minutes(50)));
+    }
+
+    #[test]
     fn panel_progress_is_shared_by_the_participants_of_one_phase() {
         let clock = ProgressClock::default();
-        assert_eq!(clock.last(), None);
+        assert_eq!(clock.lock().last_content, None);
         IdleProgress::new(300_000, clock.clone()).content_received();
-        assert!(clock.last().is_some());
+        assert!(clock.lock().last_content.is_some());
+        clock.participant_started("P1", tokio::time::Instant::now());
         clock.reset();
-        assert_eq!(clock.last(), None);
+        assert_eq!(clock.lock().last_content, None);
+        assert!(clock.lock().started.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

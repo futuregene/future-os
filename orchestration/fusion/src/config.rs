@@ -40,6 +40,9 @@ pub struct Configuration {
     pub run_timeout_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
+    /// Optional wall-clock limit for each participant analysis or review phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_timeout_secs: Option<u64>,
 }
 
 impl Default for Configuration {
@@ -55,6 +58,7 @@ impl Default for Configuration {
             step_timeout_secs: 0,
             run_timeout_secs: 0,
             idle_timeout_secs: Some(IDLE_TIMEOUT_SECS),
+            panel_timeout_secs: None,
         }
     }
 }
@@ -87,6 +91,11 @@ impl Configuration {
                 && self.run_timeout_secs == 0
                 && (1..=3600).contains(&self.idle_timeout_secs.unwrap_or(IDLE_TIMEOUT_SECS)),
             "Fusion uses a positive inactivity timeout and no step/run wall deadline"
+        );
+        ensure!(
+            self.panel_timeout_secs
+                .is_none_or(|seconds| (1..=3600).contains(&seconds)),
+            "Fusion panel timeout must be between 1 and 3600 seconds"
         );
         ensure!(
             (2..=5).contains(&self.panel.len()),
@@ -212,6 +221,12 @@ pub fn settings_patch_from_args(
                         anyhow::bail!("Select --main or --participant before --thinking");
                     }
                 }
+                "--panel-timeout" => {
+                    let seconds = value.parse::<u64>().map_err(|_| {
+                        anyhow::anyhow!("--panel-timeout needs seconds (0 to clear)")
+                    })?;
+                    config.panel_timeout_secs = (seconds != 0).then_some(seconds);
+                }
                 _ => anyhow::bail!("Unknown Fusion settings option: {flag}"),
             }
             changed = true;
@@ -321,5 +336,29 @@ mod tests {
             &["--participant".into(), "only-one".into()]
         )
         .is_err());
+    }
+
+    #[test]
+    fn terminal_panel_timeout_can_be_set_and_cleared() {
+        let mut settings = Settings::default();
+        let patch = |settings: &Settings, seconds: &str| {
+            settings_patch_from_args(settings, &["--panel-timeout".into(), seconds.into()])
+        };
+        settings.configuration = patch(&settings, "1800")
+            .unwrap()
+            .unwrap()
+            .configuration
+            .unwrap();
+        assert_eq!(settings.configuration.panel_timeout_secs, Some(1800));
+        assert!(patch(&settings, "3601").is_err());
+        assert_eq!(
+            patch(&settings, "0")
+                .unwrap()
+                .unwrap()
+                .configuration
+                .unwrap()
+                .panel_timeout_secs,
+            None
+        );
     }
 }
