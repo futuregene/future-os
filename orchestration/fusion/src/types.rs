@@ -4,11 +4,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const PANEL_MODELS: [&str; 3] = [
-    "future/deepseek-flash",
+    "future/qwen3.8-flash",
     "future/glm-5.3-flash",
-    "future/qwen3.7-plus",
+    "future/kimi-k2.6",
 ];
-pub const MODERATOR_MODEL: &str = "future/deepseek-flash";
+pub const MODERATOR_MODEL: &str = "future/qwen3.8-flash";
 /// Input contracts must match before new records are admitted or dispatched.
 pub const INPUT_POLICY_VERSION: u32 = 4;
 pub const INNER_TOOL_NAMES: [&str; 4] = ["read", "ls", "glob", "grep"];

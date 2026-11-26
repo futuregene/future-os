@@ -3,7 +3,6 @@ import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { RemoteFusionSettingsPage } from "../settings/FusionSettingsPage";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { useUnsavedGuardHost } from "../settings/unsavedGuard";
@@ -61,8 +60,6 @@ export function RemotePeerSettings({
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
-  const build = useBuildInfo();
-  const showFusionEntry = build.data?.isRelease === false;
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [approval, setApproval] = useState<RemoteApprovalSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -199,7 +196,7 @@ export function RemotePeerSettings({
     content: React.ReactNode;
     title: string;
   }> = {
-    fusion: { title: "Fusion", content: showFusionEntry ? <RemoteFusionSettingsPage guard={guard.api} peer={peer} /> : null },
+    fusion: { title: "Fusion", content: <RemoteFusionSettingsPage guard={guard.api} peer={peer} /> },
     models: {
       title: t("models"),
       content: (
@@ -354,7 +351,7 @@ export function RemotePeerSettings({
             onClick={() => setPage("models")}
             title={t("models")}
           />
-          {showFusionEntry ? <SettingsLinkRow ariaLabel={`Fusion · ${machine}`} title="Fusion" description={t("fusionHint")} disabled={!available || !peer.features.includes("fusion_settings_v1")} onClick={() => setPage("fusion")} /> : null}
+          <SettingsLinkRow ariaLabel={`Fusion · ${machine}`} title="Fusion" description={t("fusionHint")} disabled={!available || !peer.features.includes("fusion_settings_v1")} onClick={() => setPage("fusion")} />
           <SettingsLinkRow
             ariaLabel={`${t("skills")} · ${machine}`}
             description={t("skillsHint")}

@@ -30,9 +30,7 @@ import { UpdatePage } from "./UpdatePage";
 
 export type SettingsTab = "appearance" | "shortcuts" | "permission" | "reply" | "storage" | "providers" | "models" | "fusion" | "skills" | "account" | "update" | "about" | "reset" | "environment";
 
-// `devOnly` items are only shown on non-release builds. The group that holds
-// them is deliberately its own: a page that vanishes in a release build must not
-// sit beside settings that stay, or the group reads as half-missing.
+// `devOnly` items are only shown on non-release builds.
 const NAV_GROUPS = [
   {
     items: [
@@ -68,7 +66,7 @@ const NAV_GROUPS = [
   {
     items: [
       { icon: RotateCcw, labelKey: "dialog.tabs.reset", value: "reset" as const },
-      { icon: UserRoundGroup, labelKey: "dialog.tabs.fusion", value: "fusion" as const, devOnly: true },
+      { icon: UserRoundGroup, labelKey: "dialog.tabs.fusion", value: "fusion" as const },
       { icon: FlaskConical, labelKey: "dialog.tabs.environment", value: "environment" as const, devOnly: true },
     ],
     labelKey: "dialog.nav.debug",
@@ -168,7 +166,7 @@ export function SettingsDialog({
 
   // Never strand on a hidden tab, including when opened through initialTab.
   useEffect(() => {
-    if (!isTestBuild && (tab === "environment" || tab === "fusion")) {
+    if (!isTestBuild && tab === "environment") {
       setTab("appearance");
     }
   }, [isTestBuild, tab]);
@@ -340,7 +338,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
-            {tab === "fusion" && isTestBuild ? <FusionSettingsPage guard={guard.api} /> : null}
+            {tab === "fusion" ? <FusionSettingsPage guard={guard.api} /> : null}
             {tab === "shortcuts" ? <ShortcutsPage /> : null}
             {tab === "account"
               ? (

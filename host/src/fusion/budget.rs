@@ -11,13 +11,14 @@ const MIN_GENERATION_TOKENS: usize = 256;
 struct ModelCapacity {
     window: usize,
     output: usize,
+    report_output_reserve: usize,
     image_limit: usize,
 }
 
 impl ModelCapacity {
     fn report_room(self, base: usize) -> usize {
         self.window.saturating_sub(
-            self.output
+            self.report_output_reserve
                 .min(self.window / 4)
                 .saturating_add(base)
                 .saturating_add(self.image_limit.saturating_mul(USER_IMAGE_CONTEXT_TOKENS)),
@@ -68,14 +69,22 @@ impl Budget {
                 .context("Fusion requires a known model context window")?
                 as usize;
             ensure!(window > 0, "Fusion requires a positive context window");
-            let output = model["maxTokens"]
+            let catalog_output = model["maxTokens"]
                 .as_u64()
                 .filter(|n| *n > 0)
                 .with_context(|| format!("Fusion model {} requires positive maxTokens from list_models; upgrade Agent and Host together", profile.model))?
                 as usize;
+            let output = future_fusion::output_limit_override(
+                model["provider"].as_str().unwrap_or_default(),
+                model["id"].as_str().unwrap_or_default(),
+            )
+            .map_or(catalog_output, |limit| limit as usize);
             let mut capacity = ModelCapacity {
                 window,
-                output: output.max(1).min(window),
+                output: output.min(window),
+                // Forwarded report sizing keeps the catalog reserve even for
+                // roles that have a larger per-request generation budget.
+                report_output_reserve: catalog_output,
                 image_limit: 0,
             };
             if model["supportsImages"] == true {
@@ -256,16 +265,26 @@ impl Budget {
 mod tests {
     use super::*;
     use serde_json::json;
-    fn catalog(window: usize) -> Value {
+    fn catalog(window: usize, provider: &str) -> Value {
         json!({"models":[
-            {"provider":"future","id":"deepseek-flash","contextWindow":window,"maxTokens":32768},
-            {"provider":"future","id":"glm-5.3-flash","contextWindow":window,"maxTokens":32768},
-            {"provider":"future","id":"qwen3.7-plus","contextWindow":window,"maxTokens":32768}
+            {"provider":provider,"id":"qwen3.8-flash","contextWindow":window,"maxTokens":32768},
+            {"provider":provider,"id":"glm-5.3-flash","contextWindow":window,"maxTokens":32768},
+            {"provider":provider,"id":"kimi-k2.6","contextWindow":window,"maxTokens":32768}
         ]})
     }
+
+    fn custom_config() -> Configuration {
+        let mut config = Configuration::default();
+        for profile in config.panel.iter_mut().chain([&mut config.moderator]) {
+            profile.model = profile.model.replacen("future/", "fixture/", 1);
+        }
+        config
+    }
+
     #[test]
     fn pools_spare_capacity_and_bounds_the_combined_moderator_input() {
-        let mut budget = Budget::new(&catalog(262144), &Configuration::default(), 1000, 0).unwrap();
+        let mut budget =
+            Budget::new(&catalog(262144, "fixture"), &custom_config(), 1000, 0).unwrap();
         let long = "A".repeat(budget.participant_bytes + 2000);
         let mut reports = vec![
             json!({"participant":"P1","response":long}),
@@ -299,11 +318,11 @@ mod tests {
     }
 
     #[test]
-    fn typed_rpc_model_catalog_survives_to_fusion_admission() {
-        let mut source = catalog(1_000_000);
+    fn typed_rpc_model_catalog_supports_the_default_fusion_budget() {
+        let mut source = catalog(1_000_000, "future");
         // Match the required public model-list envelope and entries, not a
         // Host-only fixture that bypasses RPC's field filtering.
-        source["defaultModel"] = json!("future/deepseek-flash");
+        source["defaultModel"] = json!("future/qwen3.8-flash");
         source["isScoped"] = json!(false);
         for model in source["models"].as_array_mut().unwrap() {
             model["label"] = model["id"].clone();
@@ -322,12 +341,20 @@ mod tests {
         let decoded = future_rpc::decode::response_data(&response);
         let config = Configuration::default();
         let budget = Budget::new(&decoded, &config, 1748, 0).unwrap();
+        let large_prompt = "x".repeat(900_000);
         for profile in config.panel.iter().chain([&config.moderator]) {
             let mut settings = super::super::attempt_settings(&config, profile, None, 0).unwrap();
             budget
                 .apply(&profile.model, "analyzing", "task", &mut settings)
                 .unwrap();
-            assert_eq!(settings.max_output_tokens, 32768);
+            assert_eq!(settings.max_output_tokens, 131_072);
+            budget
+                .apply(&profile.model, "analyzing", &large_prompt, &mut settings)
+                .unwrap();
+            assert_eq!(
+                settings.max_output_tokens as usize,
+                100_000 - future_fusion::CONTEXT_MARGIN
+            );
         }
         let mut legacy = decoded;
         legacy["models"][0]
@@ -337,35 +364,35 @@ mod tests {
         let Err(error) = Budget::new(&legacy, &config, 1748, 0) else {
             panic!("invented capacity for an old Agent");
         };
-        assert!(error.to_string().contains("future/deepseek-flash"));
+        assert!(error.to_string().contains("future/qwen3.8-flash"));
     }
 
     #[test]
     fn sharing_more_roles_reduces_output_without_overbooking_moderator() {
-        let mut config = Configuration::default();
-        let smaller = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
+        let mut config = custom_config();
+        let smaller = Budget::new(&catalog(262144, "fixture"), &config, 1000, 0).unwrap();
         config
             .panel
             .extend([config.panel[0].clone(), config.panel[0].clone()]);
-        let larger = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
+        let larger = Budget::new(&catalog(262144, "fixture"), &config, 1000, 0).unwrap();
         assert!(larger.participant_bytes < smaller.participant_bytes);
         assert!(larger.participant_bytes * 5 + 32768 + future_fusion::CONTEXT_MARGIN < 262144);
-        assert!(Budget::new(&catalog(32768), &config, 30000, 0).is_err());
-        assert!(Budget::new(&catalog(0), &config, 0, 0).is_err());
-        let mut mixed = catalog(1048576);
+        assert!(Budget::new(&catalog(32768, "fixture"), &config, 30000, 0).is_err());
+        assert!(Budget::new(&catalog(0, "fixture"), &config, 0, 0).is_err());
+        let mut mixed = catalog(1048576, "fixture");
         mixed["models"][1]["contextWindow"] = json!(131072);
-        assert!(Budget::new(&mixed, &Configuration::default(), 1000, 0).is_ok());
+        assert!(Budget::new(&mixed, &custom_config(), 1000, 0).is_ok());
     }
     #[test]
     fn participant_reasoning_is_independent_of_forwarded_public_bytes() {
-        let mut catalog = catalog(1_000_000);
+        let mut catalog = catalog(1_000_000, "fixture");
         for model in catalog["models"].as_array_mut().unwrap() {
             model["maxTokens"] = json!(1_000_000);
         }
         for count in 2..=5 {
-            let mut config = Configuration::default();
+            let mut config = custom_config();
             config.panel = vec![config.panel[0].clone(); count];
-            // Reproduce the device run that reduced DeepSeek to 9,929 tokens
+            // Reproduce the device run that reduced a model to 9,929 tokens
             // by dividing its 39,718-byte public allocation by four.
             let budget = Budget::new(&catalog, &config, 1748, 0).unwrap();
             for phase in ["analyzing", "reviewing"] {
@@ -398,8 +425,8 @@ mod tests {
 
     #[test]
     fn actual_prompt_admission_is_checked_before_dispatch() {
-        let config = Configuration::default();
-        let budget = Budget::new(&catalog(262144), &config, 1000, 0).unwrap();
+        let config = custom_config();
+        let budget = Budget::new(&catalog(262144, "fixture"), &config, 1000, 0).unwrap();
         let mut settings =
             super::super::attempt_settings(&config, &config.panel[0], None, 0).unwrap();
         budget
@@ -429,11 +456,11 @@ mod tests {
 
     #[test]
     fn image_context_is_reserved_only_for_vision_steps_after_preflight() {
-        let config = Configuration::default();
+        let config = custom_config();
         let window = 262144;
-        let mut catalog = catalog(window);
+        let mut catalog = catalog(window, "fixture");
         for model in catalog["models"].as_array_mut().unwrap() {
-            model["supportsImages"] = json!(model["id"] == "deepseek-flash");
+            model["supportsImages"] = json!(model["id"] == "qwen3.8-flash");
             model["maxTokens"] = json!(window);
         }
         let text_only = Budget::new(&catalog, &config, 1000, 0).unwrap();
@@ -467,8 +494,8 @@ mod tests {
 
     #[test]
     fn low_context_models_keep_report_room_with_the_images_that_fit() {
-        let config = Configuration::default();
-        let mut catalog = catalog(1_000_000);
+        let config = custom_config();
+        let mut catalog = catalog(1_000_000, "fixture");
         for model in catalog["models"].as_array_mut().unwrap() {
             model["supportsImages"] = json!(true);
         }
@@ -488,9 +515,9 @@ mod tests {
 
     #[test]
     fn image_limit_shrinks_when_a_later_prompt_takes_more_context() {
-        let config = Configuration::default();
+        let config = custom_config();
         let window = 131_072;
-        let mut catalog = catalog(window);
+        let mut catalog = catalog(window, "fixture");
         catalog["models"][0]["supportsImages"] = json!(true);
         let budget = Budget::new(&catalog, &config, 1000, 4).unwrap();
         let model = &config.moderator;

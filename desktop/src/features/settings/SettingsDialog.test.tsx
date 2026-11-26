@@ -398,6 +398,7 @@ describe("settingsDialog dev-only environment tab", () => {
       "Check for updates",
       "About",
       "Reset",
+      "Fusion",
     ]);
   });
 
@@ -432,24 +433,17 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).not.toContain("Fusion");
     expect(container.textContent).not.toContain("Test build");
   });
 });
 
 describe("settingsDialog Fusion entry", () => {
-  it("keeps Fusion reachable on a test build", () => {
+  it.each([null, { version: "1.0.0", isRelease: true }, { version: "1.0.0-dev.abc", isRelease: false }])("opens Fusion regardless of build information (%s)", (buildInfo) => {
+    mocks.buildInfo = buildInfo;
     const { container } = mount({ initialTab: "fusion" });
     expect(navLabels(container)).toContain("Fusion");
     expect(page(container)).toBe("fusion");
-  });
-
-  it.each([null, { version: "1.0.0", isRelease: true }])("does not open Fusion through initialTab without a test build (%s)", (buildInfo) => {
-    mocks.buildInfo = buildInfo;
-    const { container } = mount({ initialTab: "fusion" });
-    expect(navLabels(container)).not.toContain("Fusion");
-    expect(page(container)).toBe("appearance");
-    expect(container.querySelector("[data-page=fusion]")).toBeNull();
+    expect(container.querySelector("[data-page=fusion]")).not.toBeNull();
   });
 });
 

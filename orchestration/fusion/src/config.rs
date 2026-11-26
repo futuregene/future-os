@@ -49,12 +49,11 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             version: GENERATION_POLICY_VERSION,
-            panel: vec![
-                ModelConfig::fixed(PANEL_MODELS[0], "medium"),
-                ModelConfig::fixed(PANEL_MODELS[1], "low"),
-                ModelConfig::fixed(PANEL_MODELS[2], "medium"),
-            ],
-            moderator: ModelConfig::fixed(MODERATOR_MODEL, "medium"),
+            panel: PANEL_MODELS
+                .into_iter()
+                .map(|model| ModelConfig::fixed(model, "high"))
+                .collect(),
+            moderator: ModelConfig::fixed(MODERATOR_MODEL, "high"),
             step_timeout_secs: 0,
             run_timeout_secs: 0,
             idle_timeout_secs: Some(IDLE_TIMEOUT_SECS),
@@ -246,15 +245,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_roles_have_explicit_thinking_without_fusion_output_caps() {
+    fn default_roles_use_the_future_panel_with_high_thinking() {
         let config = Configuration::default();
         config.validate().unwrap();
+        assert_eq!(config.moderator.model, "future/qwen3.8-flash");
+        assert_eq!(
+            config
+                .panel
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "future/qwen3.8-flash",
+                "future/glm-5.3-flash",
+                "future/kimi-k2.6"
+            ]
+        );
         for model in config.panel.iter().chain([&config.moderator]) {
-            assert_ne!(model.thinking_level, "default");
+            assert_eq!(model.thinking_level, "high");
             assert_eq!(model.max_output_tokens, 0);
             assert_eq!(model.retry_max_output_tokens, 0);
         }
-        assert_eq!(config.panel[1].thinking_level, "low");
         assert_eq!(config.step_timeout_secs, 0);
         assert_eq!(config.run_timeout_secs, 0);
         assert_eq!(config.inactivity_timeout_secs(), Some(300));
@@ -269,7 +280,7 @@ mod tests {
             idle_timeout_secs: None,
             ..Default::default()
         };
-        config.moderator.thinking_level = "high".into();
+        config.moderator.thinking_level = "medium".into();
         let historic = serde_json::to_value(&config).unwrap();
         let panel = config.panel.clone();
         let moderator = config.moderator.clone();
@@ -296,7 +307,7 @@ mod tests {
         config.panel[0] = config.moderator.clone();
         config.panel[0].thinking_level = "low".into();
         config.validate().unwrap();
-        assert_eq!(config.moderator.thinking_level, "medium");
+        assert_eq!(config.moderator.thinking_level, "high");
         config.moderator.model = " ".into();
         assert!(config.validate().is_err());
     }
