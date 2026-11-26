@@ -51,6 +51,8 @@ mod linux_power;
 mod macos_power;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod menu;
+#[cfg(feature = "gui")]
+mod native_dialog;
 mod remote;
 mod remote_peer;
 mod runtime;
@@ -1062,6 +1064,7 @@ mod gui {
             .invoke_handler(tauri::generate_handler![
                 app_build_info,
                 set_window_caption_colors,
+                set_ui_language,
                 get_agent_status,
                 get_fusion,
                 get_fusion_settings,
