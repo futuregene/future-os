@@ -6,10 +6,19 @@ import { AccountPage } from "./AccountPage";
 import { CommunityEditionSection } from "./CommunityEditionSection";
 
 vi.mock("../../integrations/agent/providers", () => ({
-  listAgentProviders: async () => ({ builtin: [{ id: "future", hasApiKey: true }], custom: [] }),
-  peekAgentProviders: () => ({ builtin: [{ id: "future", hasApiKey: true }], custom: [] }),
+  clearFutureTokenPlanCache: () => {},
   getFutureEnvironment: async () => ({ platformUrl: "https://example.invalid" }),
+  getFutureTokenPlan: async () => ({
+    active: false,
+    grantedCredits: 0,
+    usedCredits: 0,
+    remainingCredits: 0,
+    eligibleModels: [],
+  }),
+  listAgentProviders: async () => ({ builtin: [{ id: "future", hasApiKey: true }], custom: [] }),
   logoutFutureProvider: async () => { throw new Error("logout unavailable"); },
+  peekAgentProviders: () => ({ builtin: [{ id: "future", hasApiKey: true }], custom: [] }),
+  peekFutureTokenPlan: () => null,
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 

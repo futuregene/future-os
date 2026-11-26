@@ -141,6 +141,7 @@ function announceFutureProviderChange(id: string) {
     return;
   clearFutureProfileCache();
   clearFutureBalanceCache();
+  clearFutureTokenPlanCache();
   emitFutureEvent("future-auth-changed", undefined);
 }
 
@@ -289,6 +290,28 @@ export interface FutureBalance {
   credits: number;
 }
 
+/**
+ * The signed-in account's subscription and current quota window, from
+ * `{platform}/client/v1/token-plan`. Fields are absent (not null) when the
+ * account has never subscribed; `active` and the three credit totals are always
+ * present.
+ */
+export interface FutureTokenPlan {
+  active: boolean;
+  planCode?: string;
+  name?: string;
+  status?: "active" | "scheduled" | "expired" | "canceled";
+  startsAt?: string;
+  endsAt?: string;
+  windowStart?: string;
+  windowEnd?: string;
+  windowResetsAt?: string;
+  grantedCredits: number;
+  usedCredits: number;
+  remainingCredits: number;
+  eligibleModels: string[];
+}
+
 /** Verify whether the stored FutureOS key is currently accepted by the platform. */
 export function getFutureAuthState(): Promise<FutureAuthState> {
   return invokeCommand<FutureAuthState>("get_future_auth_state");
@@ -322,6 +345,32 @@ export function storeFutureBalance(balance: FutureBalance): void {
 /** Drop the cached balance so the next fetch refetches (call on logout). */
 export function clearFutureBalanceCache(): void {
   balanceCache = null;
+}
+
+// ── Subscription cache ───────────────────────────────────────────────────
+
+let tokenPlanCache: FutureTokenPlan | null = null;
+
+/**
+ * Fetch the signed-in account's subscription and current quota window. The
+ * cache only avoids a duplicate request within one page visit; the account page
+ * forces a fresh read when it opens and after a run ends, because the window's
+ * used credits move with every model call.
+ */
+export async function getFutureTokenPlan(force = false): Promise<FutureTokenPlan> {
+  if (force || !tokenPlanCache)
+    tokenPlanCache = await invokeCommand<FutureTokenPlan>("get_future_token_plan");
+  return tokenPlanCache;
+}
+
+/** The cached subscription if one was fetched, else null (sync read). */
+export function peekFutureTokenPlan(): FutureTokenPlan | null {
+  return tokenPlanCache;
+}
+
+/** Drop the cached subscription so the next fetch refetches (call on logout). */
+export function clearFutureTokenPlanCache(): void {
+  tokenPlanCache = null;
 }
 
 // ── Profile cache ────────────────────────────────────────────────────────

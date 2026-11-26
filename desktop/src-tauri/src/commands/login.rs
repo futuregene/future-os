@@ -72,6 +72,14 @@ pub async fn get_future_balance() -> Result<FutureBalance, crate::AppError> {
     crate::scheduler::refresh_future_balance_now().await
 }
 
+/// The signed-in account's subscription and current quota window. Unlike the
+/// balance this is not pushed by the scheduler: only the account page reads it,
+/// which refreshes it when it opens.
+#[tauri::command]
+pub async fn get_future_token_plan() -> Result<future_login::FutureTokenPlan, crate::AppError> {
+    future_login::fetch_token_plan().await
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::await_holding_lock)]
@@ -180,6 +188,21 @@ mod tests {
         point_auth_with_key(&url);
         let balance = get_future_balance().await.expect("balance");
         assert_eq!(balance.credits, 1.0);
+    }
+
+    #[tokio::test]
+    async fn get_future_token_plan_fetches_the_subscription() {
+        let _home = HomeGuard::new("cmd-login-token-plan");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            br#"{"plan_code":"plus","name":"Plus","active":true,"status":"active","ends_at":"2026-12-01T00:00:00Z","granted_credits":5.0,"used_credits":1.0,"remaining_credits":4.0,"eligible_models":[]}"#.to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let plan = get_future_token_plan().await.expect("token plan");
+        assert!(plan.active);
+        assert_eq!(plan.name.as_deref(), Some("Plus"));
+        assert_eq!(plan.remaining_credits, 4.0);
     }
 
     /// `get_future_auth_state` is a three-way classification, not a boolean: a

@@ -1110,6 +1110,7 @@ mod gui {
                 get_future_profile,
                 get_future_auth_state,
                 get_future_balance,
+                get_future_token_plan,
                 archive_finished_runs,
                 list_threads,
                 list_threads_page,

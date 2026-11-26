@@ -180,6 +180,39 @@ pub async fn check_auth_state() -> FutureAuthState {
     }
 }
 
+/// The signed-in account's subscription and current quota window, as returned
+/// by `{platform}/client/v1/token-plan`. Deserialized from the platform's
+/// snake_case payload (fields are omitted when absent); serialized to camelCase
+/// for the frontend.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct FutureTokenPlan {
+    pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// `active`, `scheduled`, `expired` or `canceled`; absent when the account
+    /// has never subscribed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub starts_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_start: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_resets_at: Option<String>,
+    pub granted_credits: f64,
+    pub used_credits: f64,
+    pub remaining_credits: f64,
+    #[serde(default)]
+    pub eligible_models: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct BalanceResponse {
     balance_credits: i64,
@@ -224,6 +257,39 @@ pub async fn fetch_balance() -> Result<FutureBalance, AppError> {
     Ok(FutureBalance {
         credits: ((raw.balance_credits as f64 / CREDIT_UNIT) * 1000.0).trunc() / 1000.0,
     })
+}
+
+/// Fetch the signed-in account's subscription and current quota window
+/// (`GET {platform}/client/v1/token-plan`, Bearer the stored `future` key).
+/// The endpoint reports an empty, inactive plan for an account that never
+/// subscribed, so this is not an error in that case. Errors when signed out or
+/// on a failed request.
+pub async fn fetch_token_plan() -> Result<FutureTokenPlan, AppError> {
+    let key = future_api_key()?;
+    let platform = crate::future_platform::checked_platform_url()?;
+    let response = client()
+        .get(format!("{platform}/client/v1/token-plan"))
+        .bearer_auth(&key)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to fetch subscription: {error}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let message = error_message_from_body(response.json::<Value>().await.ok())
+            .unwrap_or_else(|| format!("Subscription request failed (HTTP {})", status.as_u16()));
+        return Err(AppError::Remote {
+            status: status.as_u16(),
+            code: None,
+            message,
+        });
+    }
+
+    response
+        .json::<FutureTokenPlan>()
+        .await
+        .map_err(|error| AppError::Message(format!("Failed to parse subscription: {error}")))
 }
 
 fn client() -> &'static reqwest::Client {
@@ -896,6 +962,82 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Not signed in"));
+    }
+
+    #[tokio::test]
+    async fn fetch_token_plan_parses_subscription_and_window() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-plan");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            br#"{"plan_code":"plus","name":"Plus","active":true,"status":"active","starts_at":"2026-11-01T00:00:00Z","ends_at":"2026-12-01T00:00:00Z","window_start":"2026-11-26T08:00:00Z","window_end":"2026-11-26T12:00:00Z","window_resets_at":"2026-11-26T12:00:00Z","granted_credits":5.0,"used_credits":1.25,"remaining_credits":3.75,"eligible_models":["deepseek-v3"]}"#.to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let plan = fetch_token_plan().await.unwrap();
+        assert!(plan.active);
+        assert_eq!(plan.plan_code.as_deref(), Some("plus"));
+        assert_eq!(plan.name.as_deref(), Some("Plus"));
+        assert_eq!(plan.status.as_deref(), Some("active"));
+        assert_eq!(plan.ends_at.as_deref(), Some("2026-12-01T00:00:00Z"));
+        assert_eq!(plan.granted_credits, 5.0);
+        assert_eq!(plan.used_credits, 1.25);
+        assert_eq!(plan.remaining_credits, 3.75);
+        assert_eq!(plan.eligible_models, vec!["deepseek-v3".to_string()]);
+    }
+
+    /// An account that never subscribed gets `active: false` with every plan
+    /// field omitted: the fetch succeeds rather than failing on the gaps.
+    #[tokio::test]
+    async fn fetch_token_plan_accepts_an_empty_subscription() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-plan-empty");
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            br#"{"active":false,"granted_credits":0.0,"used_credits":0.0,"remaining_credits":0.0,"eligible_models":[]}"#.to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let plan = fetch_token_plan().await.unwrap();
+        assert!(!plan.active);
+        assert!(plan.plan_code.is_none());
+        assert!(plan.ends_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_token_plan_preserves_auth_rejection_status() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-plan-auth");
+        let url = mock_http_server(vec![(
+            401,
+            "application/json",
+            b"{\"message\":\"expired\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let error = fetch_token_plan().await.unwrap_err();
+        assert!(is_auth_rejection(&error));
+    }
+
+    #[tokio::test]
+    async fn fetch_token_plan_requires_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("fl-plan-out");
+        assert!(fetch_token_plan()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("Not signed in"));
+    }
+
+    /// The frontend reads camelCase (`windowResetsAt`); the platform's payload
+    /// is snake_case. Pin the rename so the two cannot drift apart silently.
+    #[test]
+    fn token_plan_serializes_camel_case_for_the_frontend() {
+        let plan: FutureTokenPlan = serde_json::from_str(
+            r#"{"active":true,"plan_code":"plus","window_resets_at":"2026-11-26T12:00:00Z","granted_credits":5.0,"used_credits":1.0,"remaining_credits":4.0,"eligible_models":[]}"#,
+        )
+        .expect("deserialize");
+        let value = serde_json::to_value(&plan).expect("serialize");
+        assert_eq!(value["planCode"], "plus");
+        assert_eq!(value["windowResetsAt"], "2026-11-26T12:00:00Z");
+        assert!(value.get("plan_code").is_none());
+        assert!(value.get("window_resets_at").is_none());
     }
 
     #[tokio::test]
