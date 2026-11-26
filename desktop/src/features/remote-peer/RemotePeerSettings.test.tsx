@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { UnsavedGuardApi } from "../settings/unsavedGuard";
 import type { RemotePeer } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -41,6 +42,23 @@ vi.mock("./RemoteSkillsPanel", () => ({
     <div data-available={String(props.available)} data-testid="skills-panel" />
   ),
 }));
+// The Fusion page is a draft form that registers itself with the guard this
+// surface hosts; the probe stands in for it so a test can decide whether a
+// draft exists. The real page has its own suite.
+const fusionDraft = vi.hoisted(() => ({ dirty: false }));
+vi.mock("../settings/FusionSettingsPage", async () => {
+  const { useUnsavedGuard } = await import("../settings/unsavedGuard");
+  return {
+    RemoteFusionSettingsPage: (props: { guard: UnsavedGuardApi | null }) => {
+      useUnsavedGuard(props.guard, {
+        subject: "Fusion model configuration",
+        isDirty: () => fusionDraft.dirty,
+        save: async () => true,
+      });
+      return <div data-testid="fusion-page" />;
+    },
+  };
+});
 
 let listeners: Array<(event: { payload: unknown }) => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({
@@ -147,6 +165,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   build.data = { isRelease: false };
+  fusionDraft.dirty = false;
   listeners = [];
   document.body.innerHTML = "";
   request.mockReset();
@@ -160,6 +179,45 @@ it.each([null, { isRelease: true }, { isRelease: false }])("shows the remote Fus
   const view = await mount({ peer: peer({ features: ["fusion_settings_v1"] }) });
   try {
     expect(view.container.querySelector("[aria-label=\"Fusion · Studio iMac\"]") !== null).toBe(buildInfo?.isRelease === false);
+  }
+  finally {
+    await view.unmount();
+  }
+});
+
+/**
+ * The Fusion page keeps a draft, so its own "back" is one more way to drop it:
+ * the guard this surface hosts asks first, and "keep editing" leaves the draft
+ * on screen.
+ */
+it("asks before the Fusion page's back button drops a draft", async () => {
+  fusionDraft.dirty = true;
+  const view = await mount({ peer: peer({ features: ["fusion_settings_v1"] }) });
+  try {
+    await act(async () => {
+      view.container.querySelector<HTMLButtonElement>("[aria-label=\"Fusion · Studio iMac\"]")!.click();
+    });
+    await settle();
+    expect(view.container.querySelector("[data-testid=fusion-page]")).not.toBeNull();
+
+    const back = () => [...view.container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Settings")!;
+    const prompt = () => view.text().includes("Save your changes?");
+
+    await act(async () => back().click());
+    expect(prompt()).toBe(true);
+    expect(view.container.querySelector("[data-testid=fusion-page]")).not.toBeNull();
+
+    await act(async () => {
+      [...view.container.querySelectorAll("button")].find(node => node.textContent?.trim() === "Keep editing")!.click();
+    });
+    expect(prompt()).toBe(false);
+
+    // Nothing to keep once the draft is gone: the same back control leaves.
+    fusionDraft.dirty = false;
+    await act(async () => back().click());
+    await settle();
+    expect(prompt()).toBe(false);
+    expect(view.container.querySelector("[data-testid=fusion-page]")).toBeNull();
   }
   finally {
     await view.unmount();
