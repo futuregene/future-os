@@ -18,7 +18,12 @@ import { ROW_HIT_SLOP } from "./touchTargets";
 type FetchState =
   | { status: "idle"; }
   | { status: "loading"; }
-  | { status: "loaded"; text: string; }
+  /**
+   * `live` marks a body read while the block was still being written: it is a
+   * prefix of the thought, not the thought, so opening the row again once the
+   * block settles reads the complete text instead of keeping that snapshot.
+   */
+  | { status: "loaded"; text: string; live?: boolean; }
   | { status: "unavailable"; };
 
 /**
@@ -70,13 +75,13 @@ export function ThinkingRow({ text, streaming, opened, onLoad }: {
     setExpanded(true);
     if (hasText || !onLoad) return;
     if (fetched.status === "loading") return;
-    if (fetched.status === "loaded") return;
+    if (fetched.status === "loaded" && !(fetched.live && !streaming)) return;
     setFetched({ status: "loading" });
     void onLoad()
       .then((loaded) => {
         const trimmed = loaded?.trim() ?? "";
         setFetched(trimmed.length > 0
-          ? { status: "loaded", text: loaded ?? "" }
+          ? { status: "loaded", text: loaded ?? "", live: !!streaming }
           : { status: "unavailable" });
       })
       .catch(() => setFetched({ status: "unavailable" }));

@@ -339,6 +339,63 @@ fn get_reasoning_reads_its_own_arm_with_the_block_index_in_offset() {
     );
 }
 
+/// A row opened while the model is still thinking reads the block the run is
+/// writing.
+///
+/// A reasoning block reaches the session store with the entry that carries it —
+/// at the end of the run — so a lean client's on-demand read found nothing to
+/// answer with for as long as the reply streamed, and the reader was told the
+/// reasoning was unreadable. The text is in the run's live projection the whole
+/// time; this is the read that reaches it.
+#[test]
+fn get_reasoning_answers_from_the_run_that_is_still_writing() {
+    let state = make_app_state();
+    let broadcaster = state
+        .sessions
+        .read()
+        .get("default")
+        .expect("test session")
+        .read()
+        .broadcaster
+        .clone();
+    broadcaster.start_run("run-live".into(), 1);
+    for (kind, data) in [
+        ("thinking_start", serde_json::json!({"block_id": "b0"})),
+        (
+            "thinking_delta",
+            serde_json::json!({"block_id": "b0", "text": "half a "}),
+        ),
+        (
+            "thinking_delta",
+            serde_json::json!({"block_id": "b0", "text": "thought"}),
+        ),
+    ] {
+        broadcaster.broadcast(crate::rpc::SseEvent::new(kind, data));
+    }
+
+    let mut cmd = make_cmd("get_reasoning");
+    cmd.session_id = "default".into();
+    cmd.run_id = "run-live".into();
+    cmd.offset = Some(0);
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(
+        response["data"]["text"],
+        serde_json::json!("half a thought")
+    );
+    assert_eq!(response["data"]["runId"], serde_json::json!("run-live"));
+
+    // An index the run has not written to is still an explicit miss: the live
+    // fold must not invent a block for it.
+    let mut cmd = make_cmd("get_reasoning");
+    cmd.session_id = "default".into();
+    cmd.run_id = "run-live".into();
+    cmd.offset = Some(3);
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert!(response["data"]["text"].is_null(), "{response}");
+}
+
 /// Dispatch completeness: every command the shared policy registry knows must
 /// reach a real arm. The dispatcher's final `_ => "unknown command"` arm is the
 /// tripwire for a gap between the registry and the match below it, so any
