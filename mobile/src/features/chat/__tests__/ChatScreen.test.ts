@@ -1912,6 +1912,31 @@ test("a photo added to a row that already left the queue stays in the message bo
   expect(attachmentsInBox()).toEqual(["new.png"]);
 });
 
+/**
+ * A document the picker could not read. The reading happens while the picker is
+ * still open, so the waiting row is not cancelled for a re-send that could not
+ * carry the file — the reader keeps both the message and a sentence about the
+ * file, instead of losing the message and hearing "failed to send".
+ */
+test("a document that cannot be read leaves the waiting row alone and says so", async () => {
+  const toast = jest.spyOn(chatUtils, "showToast").mockImplementation(() => {});
+  const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
+  remoteFiles.pickAttachments.mockRejectedValueOnce(new Error("attachment_file_unreadable"));
+  await mountWithQueue([queueRow({ attachments: [], runId: "run_a", text: "look" })]);
+
+  await act(async () => {
+    tree.root.findByType(ComposerDock).props.onQueueAddAttachments("run_a");
+  });
+  const menu = tree.root.findByType(AttachmentSourceMenu);
+  await act(async () => { menu.props.onPick("files"); });
+  await settleQueue();
+
+  expect(mockRemote.cancelQueuedRun).not.toHaveBeenCalled();
+  expect(mockRemote.sendMessage).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith("attachment.errors.attachment_file_unreadable");
+  expect(attachmentsInBox()).toEqual([]);
+});
+
 /** The other half: the cancel went through and the desktop then refused the send. */
 test("a photo whose re-send is refused lands in the message box exactly once", async () => {
   const remoteFiles = jest.requireMock("../../../remote/files") as { pickAttachments: jest.Mock };
