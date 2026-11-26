@@ -10,6 +10,7 @@ mod sse;
 mod stream_wait_tests;
 #[cfg(test)]
 mod tls_verify_tests;
+use crate::types::LLMProvider;
 use adapters::{AdapterRegistry, ProtocolAdapter};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -260,6 +261,38 @@ impl Client {
         Ok(target)
     }
 
+    fn with_request_target(&self, target: schema::ResolvedModelTarget) -> Self {
+        Self {
+            http: self.http.clone(),
+            generation: RwLock::new(target.generation.clone()),
+            target: RwLock::new(Some(target)),
+            live_model: None,
+            adapters: self.adapters.clone(),
+        }
+    }
+
+    async fn stream_model_with_token_budget(
+        &self,
+        request: schema::ModelRequest,
+        max_output_tokens: i32,
+        fusion_child: bool,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        let mut target = self.target_for_request()?;
+        let verified_fusion_limit = if fusion_child {
+            future_fusion::output_limit_override(&target.route.provider_id, &target.model_id)
+        } else {
+            None
+        };
+        let model_limit = verified_fusion_limit.unwrap_or(target.capabilities.max_output_tokens);
+        let capped = if model_limit > 0 {
+            max_output_tokens.min(model_limit)
+        } else {
+            max_output_tokens
+        };
+        target.generation.max_output_tokens = Some(capped);
+        self.with_request_target(target).stream_model(request).await
+    }
+
     pub fn with_thinking_level(self, level: &str) -> Self {
         self.generation.write().thinking_level = level.to_string();
         self
@@ -429,7 +462,7 @@ impl Client {
 }
 
 #[async_trait::async_trait]
-impl crate::types::LLMProvider for Client {
+impl LLMProvider for Client {
     async fn stream_model(
         &self,
         mut request: schema::ModelRequest,
@@ -766,21 +799,21 @@ impl crate::types::LLMProvider for Client {
             max_output_tokens > 0,
             "summary output limit must be positive"
         );
-        let mut target = self.target_for_request()?;
-        let capped = if target.capabilities.max_output_tokens > 0 {
-            max_output_tokens.min(target.capabilities.max_output_tokens)
-        } else {
-            max_output_tokens
-        };
-        target.generation.max_output_tokens = Some(capped);
-        let limited = Self {
-            http: self.http.clone(),
-            generation: RwLock::new(target.generation.clone()),
-            target: RwLock::new(Some(target)),
-            live_model: None,
-            adapters: self.adapters.clone(),
-        };
-        limited.stream_model(request).await
+        self.stream_model_with_token_budget(request, max_output_tokens, false)
+            .await
+    }
+
+    async fn stream_model_with_fusion_output_limit(
+        &self,
+        request: schema::ModelRequest,
+        max_output_tokens: i32,
+    ) -> Result<ReceiverStream<schema::ModelStreamEvent>> {
+        anyhow::ensure!(
+            max_output_tokens > 0,
+            "Fusion output limit must be positive"
+        );
+        self.stream_model_with_token_budget(request, max_output_tokens, true)
+            .await
     }
 
     async fn stream_model_with_controls(
@@ -806,14 +839,7 @@ impl crate::types::LLMProvider for Client {
         target.generation.required_tool = controls.required_tool;
         // A private target freezes one coherent route/config snapshot; neither
         // the live registry nor the session's selected generation is mutated.
-        let scoped = Self {
-            http: self.http.clone(),
-            generation: RwLock::new(target.generation.clone()),
-            target: RwLock::new(Some(target)),
-            live_model: None,
-            adapters: self.adapters.clone(),
-        };
-        scoped.stream_model(request).await
+        self.with_request_target(target).stream_model(request).await
     }
 
     fn snapshot(&self) -> Option<std::sync::Arc<dyn crate::types::LLMProvider>> {
@@ -2151,7 +2177,7 @@ mod tests {
             target.capabilities.reasoning.supported = true;
             let client = Client::from_target(target);
             let frozen = client.snapshot().unwrap();
-            client.update_thinking("high", 16_000);
+            client.update_thinking("low", 2_000);
             for _ in 0..2 {
                 let _: Vec<_> = frozen
                     .stream_model(canonical_request())
@@ -2176,7 +2202,7 @@ mod tests {
             }
             let ordinary: Value = serde_json::from_str(&requests[2]).unwrap();
             assert_eq!(ordinary["max_tokens"], 256);
-            assert_eq!(ordinary["reasoning_effort"], "high");
+            assert_eq!(ordinary["reasoning_effort"], "low");
         }
     }
 
@@ -2272,6 +2298,44 @@ mod tests {
         let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
         assert_eq!(first["max_tokens"], 8192);
         assert_eq!(second["max_tokens"], 32_000);
+    }
+
+    #[tokio::test]
+    async fn fusion_output_budget_is_bounded_on_the_wire_and_leaves_chat_unchanged() {
+        for (provider, expected) in [("future", 131_072), ("fixture", 128_000)] {
+            let server = mock_server(|_| {
+                (200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into())
+            });
+            let mut target = protocol_target(
+                &server.base_url,
+                schema::ProtocolConfig::OpenAiChat(schema::OpenAiChatConfig::default()),
+            );
+            target.model_id = "glm-5.3-flash".into();
+            target.route.provider_id = provider.into();
+            target.generation.max_output_tokens = Some(65_536);
+            target.capabilities.max_output_tokens = 128_000;
+            let client = Client::from_target(target);
+            for output_limit in [131_072, 96_000] {
+                let _: Vec<_> = client
+                    .stream_model_with_fusion_output_limit(canonical_request(), output_limit)
+                    .await
+                    .unwrap()
+                    .collect()
+                    .await;
+            }
+            let _: Vec<_> = client
+                .stream_model(canonical_request())
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(requests.len(), 3);
+            for (body, limit) in requests.iter().zip([expected, 96_000, 65_536]) {
+                let body: Value = serde_json::from_str(body).unwrap();
+                assert_eq!(body["max_tokens"], limit);
+            }
+        }
     }
 
     /// DeepSeek's thinking mode refuses a follow-up whose assistant turn lost

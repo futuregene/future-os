@@ -27,8 +27,6 @@ vi.mock("./remotePeerClient", async (importOriginal) => {
 // here. Their calls land on the Tauri boundary, which is mocked instead.
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
-const build = vi.hoisted(() => ({ data: null as { isRelease: boolean } | null }));
-vi.mock("../../integrations/tauri/useBuildInfo", () => ({ useBuildInfo: () => build }));
 // The sub-pages' panels are their own concerns; they are covered where they live.
 vi.mock("./RemoteModelsPanel", () => ({
   RemoteModelsPanel: (props: { hidden: string[]; onChangeHidden: (next: string[]) => void }) => (
@@ -164,7 +162,6 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
-  build.data = { isRelease: false };
   fusionDraft.dirty = false;
   listeners = [];
   document.body.innerHTML = "";
@@ -174,11 +171,11 @@ beforeEach(() => {
   answerHost();
 });
 
-it.each([null, { isRelease: true }, { isRelease: false }])("shows the remote Fusion settings entry only on a known test build (%s)", async (buildInfo) => {
-  build.data = buildInfo;
-  const view = await mount({ peer: peer({ features: ["fusion_settings_v1"] }) });
+it.each([true, false])("enables the remote Fusion settings entry when the host supports it (%s)", async (supported) => {
+  const view = await mount({ peer: peer({ features: supported ? ["fusion_settings_v1"] : [] }) });
   try {
-    expect(view.container.querySelector("[aria-label=\"Fusion · Studio iMac\"]") !== null).toBe(buildInfo?.isRelease === false);
+    const button = view.container.querySelector<HTMLButtonElement>("[aria-label=\"Fusion · Studio iMac\"]");
+    expect(button?.disabled).toBe(!supported);
   }
   finally {
     await view.unmount();

@@ -10,14 +10,15 @@ Fusion 是主 Agent 可调用的多模型思考工具，编排内核位于 `orch
 
 ## 当前实现与使用
 
-- 初始默认主持模型为 `future/deepseek-flash`；三个默认参与者为 `future/deepseek-flash`、`future/glm-5.3-flash`、`future/qwen3.7-plus`。最后一个型号按当前 Future 目录和用户确认选择，不使用不存在的 `qwen3.8-plus`，主持人缺失时明确失败，参与者缺失时记录原因并排除该角色，不替换成默认模型。
+- 默认主持人为 `future/qwen3.8-flash`，参与者为 `future/qwen3.8-flash`、`future/glm-5.3-flash` 和 `future/kimi-k2.6`。四个角色默认使用 `high` 思考等级。升级后继续使用已保存的模型和思考等级。主持人缺失时返回错误，参与者缺失时记录原因并排除该角色。
 - 启动 Desktop 或 `future host`，在 Desktop、Mobile 或 TUI 输入 `/fusion <任务>`。主 Agent 本次获得 `fusion`，对需要判断的问题按下述主动讨论策略调用；健康路径按 N→1→N→1 讨论（N 为 2–5）；故障分支可跳过阶段或返回无结论结果，外层收到唯一工具结果后继续原任务。普通后续 run 不继承该工具。
 - Desktop/Mobile 展开回复的过程，再展开 Fusion，仅显示标题四段圆环与各模型的图标状态，使用 `user-round-group` 图标；详细发言、诊断和工具证据继续保存在数据库；桌面右侧“运行”面板提供 Fusion 讨论明细，终端查询仍可复盘原文。TUI 使用 `/fusion-log` 查看当前父会话最近一次讨论，`/fusion-log <step-id>` 查看原始步骤。CLI 使用 `future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] --json`，查询不调用模型。
 - 共享 Host 通过 `~/.future/fusion/fusion.db` 的有界持久队列接收 Agent 工具调用，避免 Agent 反向依赖 Host。Host 实例锁保证执行器唯一，事务认领每次讨论，最多同时执行五个讨论。服务不可用或旧 Agent/Host 不支持时明确失败。
 - Agent 从原始用户提交开头的独立命令 token 验证启用，并冻结到 `ScheduledSettingsSnapshot.fusion_enabled`，同原文与请求键一起持久化；不新增持久会话开关。Remote outbox 保留原始 `/fusion`，重发继续使用原请求键。内层会话标记为 `created_by=fusion`，每次运行都强制替换成四个快照工具，不从普通会话设置继承 shell/写工具。
 - 本次讨论策略必须进入实际模型请求使用的 `StreamContext.system_prompt`，自定义系统提示词也不能遗漏；先复制提示词再追加策略，会造成工具可见但系统级规则丢失。普通后续 run 不继承该工具或策略。推导答案、解决推理问题和检查论证都属于讨论触发范围；Fusion 是内部思考，不等同于外部查询或行动。仍使用模型正常的自动工具选择，不强制派发，也不加入评测专用触发指令。
 - 调用时仅捕获显式 `read_scope` 中经父权限允许的 UTF-8 文件，生成同一份有哈希的文件快照，所有轮次读取它；空范围适用于纯概念问题。拒绝越界、链接/reparse point、特殊文件和越限资料。单文件 1 MiB、合计 16 MiB、最多 1024 个文件/目录；记录捕获起止时间并检测观察到的变化，不声称文件系统原子快照。
-- Fusion 不使用固定字数限制，改为按模型容量动态分配：预留主持模型输出及输入空间，再按参与者人数分配最终报告容量；工作生成额度独立分配，详见上下文容量准入。DeepSeek Flash、Qwen 3.7 Plus 及 DeepSeek 主持模型的初始思考等级为 `medium`，GLM 5.3 Flash 初始为 `low`。工具循环不额外限制为五轮；生成策略 3 不再设置步骤或整场固定总时长，以连续 300 秒没有新增推理或正文作为无进展超时。每个父 run 的讨论次数不设上限，每步骤仍最多两次尝试。整步超时、取消、鉴权及未知错误不原样重试；开启 Agent 超限续写时，同一个子 run 内每个生成步骤最多续写两次，沿用所选思考档位，报告超额或结构错误在原会话内修正，不新建会话重跑，明确的临时服务错误可有限重试。空 `read_scope` 不提供文件工具。失败尝试单独记录；结果只标记 `full`、`partial` 或 `single` 的实际完整性。
+- Fusion 不使用固定字数限制，改为按模型容量动态分配：预留主持模型输出及输入空间，再按参与者人数分配最终报告容量；工作生成额度独立分配，详见上下文容量准入。工具循环不额外限制为五轮；生成策略 3 不再设置步骤或整场固定总时长，以连续 300 秒没有新增推理或正文作为无进展超时。每个父 run 的讨论次数不设上限，每步骤仍最多两次尝试。整步超时、取消、鉴权及未知错误不原样重试；开启 Agent 超限续写时，同一个子 run 内每个生成步骤最多续写两次，沿用所选思考档位，报告超额或结构错误在原会话内修正，不新建会话重跑，明确的临时服务错误可有限重试。空 `read_scope` 不提供文件工具。失败尝试单独记录；结果只标记 `full`、`partial` 或 `single` 的实际完整性。
+- Fusion 的主持和参与者使用 Future Qwen 3.8 Flash、GLM 5.3 Flash 或 Kimi K2.6 时，单次请求的默认输出上限为 131,072 tokens，实际额度受剩余上下文约束。其他模型或提供商沿用模型目录的额度。Agent 默认开启超限续写，各子 run 沿用该设置。外层对话模型使用当前会话的设置。
 - `fusion_runs/inputs/participants/steps/messages/issues/positions/events` 保存结构、输入、状态、引用和诊断，完整正文/工具证据仍由 Agent 子会话持久化。详情预览有界，原文按 UTF-8 字节分页读取；查询校验父会话、数据库来源及步骤归属。重启中断未完成讨论，不静默重新计费；父任务取消会停止讨论，晚到结果不能覆盖取消。
 - 删除父会话时先停止并清理关联子会话，再清理讨论与快照。`future data` 离线备份包含 Fusion 数据库和快照，恢复继续保留原始消息/run ID。历史查询允许同一数据库恢复后的存档，执行仍要求当前恢复代身份匹配。
 
@@ -129,7 +130,7 @@ Host 心跳与 Agent 状态声明 Fusion 输入契约版本；接入与分派会
 
 [设置验证记录](../testing/fusion-settings.md)。
 
-Desktop 设置在“模型”下方提供 Fusion 页；远程桌面与手机的宿主设置提供同一页。Host 保存一个必选主持人和 2–5 个参与角色，每个角色独立配置模型、思考等级。主持人与参与者可以相同，参与者也可以重复；角色 ID（moderator、P1…P5）决定执行和进度归属，同名模型不会合并为一行。此处主持人是讨论主持者，与外层聊天模型分开配置。
+正式版开放 Fusion 设置和聊天入口。Desktop 设置在“模型”下方提供 Fusion 页，远程桌面与手机的宿主设置提供同一页。Host 保存一个必选主持人和 2–5 个参与角色，每个角色独立配置模型、思考等级。主持人与参与者可以相同，参与者也可以重复；角色 ID（moderator、P1…P5）决定执行和进度归属，同名模型不会合并为一行。此处主持人是讨论主持者，与外层聊天模型分开配置。
 
 Fusion 开关控制 `/fusion` 的可用性，不会自动让每条消息启用讨论。初始保持开启以兼容已有行为；关闭后移除补全入口，手输命令或直接调用新讨论也由 Agent/Store 拒绝。历史仍可查询；已经创建的讨论继续使用其冻结配置，不因中途修改或关闭而改变。模型调整显式点击保存，开关即时保存。
 
@@ -138,9 +139,10 @@ Fusion 开关控制 `/fusion` 的可用性，不会自动让每条消息启用�
 CLI 查看 `future fusion settings --json`，关闭使用 `future fusion settings --disable`，重新开启使用 `--enable`。TUI 使用 `/fusion-settings` 和同样的参数。`--main MODEL --thinking LEVEL` 设置主持角色；重复 `--participant MODEL --thinking LEVEL` 替换整个参与列表，必须提供 2–5 个。`--thinking` 只作用于最近的已选角色。例如：
 
 ```sh
-future fusion settings --main future/deepseek-flash --thinking medium \
-  --participant future/deepseek-flash --thinking low \
-  --participant future/qwen3.7-plus --thinking medium
+future fusion settings --main future/qwen3.8-flash --thinking high \
+  --participant future/qwen3.8-flash --thinking high \
+  --participant future/glm-5.3-flash --thinking high \
+  --participant future/kimi-k2.6 --thinking high
 ```
 
 执行器按 N 个参与角色推进 N+1+N+1，议题引用只接受本次实际存在的 P1…PN。旧历史记录继续按原快照读取，不补写新配置。客户端不访问本机数据库；手机通过配对宿主设置，TUI/CLI 通过 Agent RPC 设置。所有路径与存储继续使用跨平台 API。

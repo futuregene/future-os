@@ -13,7 +13,6 @@ import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
 import { useFusionAvailability } from "../../integrations/fusion/settings";
 import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
-import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useCommittedRef } from "../../lib/useCommittedRef";
@@ -346,19 +345,17 @@ function ComposerImpl({
   }, [draftKey]);
 
   const fusionAvailable = useFusionAvailability();
-  const build = useBuildInfo();
-  const showFusionEntry = build.data?.isRelease === false && fusionAvailable;
   const contextTools = useMemo<ContextToolOption[]>(() => {
     const fusion = { id: "fusion", name: "/fusion", description: t("fusion.enableDescription"), searchText: "fusion 讨论 多模型 思考" };
     if (!onCompactContext || sending || compactionPending)
-      return showFusionEntry ? [fusion] : [];
-    return [...(showFusionEntry ? [fusion] : []), {
+      return fusionAvailable ? [fusion] : [];
+    return [...(fusionAvailable ? [fusion] : []), {
       id: "compact",
       name: t("composer.compactContext"),
       description: t("composer.compactContextDescription"),
       searchText: "compact compaction compress context 压缩 上下文",
     }];
-  }, [compactionPending, onCompactContext, sending, t, showFusionEntry]);
+  }, [compactionPending, onCompactContext, sending, t, fusionAvailable]);
 
   const catalog = useSkillCatalog();
   const skills = useMemo<SkillMentionOption[]>(() => {

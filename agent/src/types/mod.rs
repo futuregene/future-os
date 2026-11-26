@@ -1062,6 +1062,18 @@ pub trait LLMProvider: Send + Sync {
         self.stream_model(request).await
     }
 
+    /// Request-local generation budget after Fusion accounts for prompt and
+    /// repair space. Providers without a Fusion override use the ordinary cap.
+    async fn stream_model_with_fusion_output_limit(
+        &self,
+        request: crate::llm::schema::ModelRequest,
+        max_output_tokens: i32,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        self.stream_model_with_output_limit(request, max_output_tokens)
+            .await
+    }
+
     /// Request-scoped orchestration controls. Immutable providers may preserve
     /// their behavior; the run loop still validates the required tool outcome.
     async fn stream_model_with_controls(

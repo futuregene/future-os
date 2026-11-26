@@ -8,7 +8,7 @@ Open Settings from the bottom-left of the window: when the left panel is collaps
 | **Conversation** | Permissions, Replies, Storage |
 | **Models and skills** | Providers, Models, Skills |
 | **Account** | Account, Check for updates, About |
-| **Debug** | Reset (test builds add **Fusion** and **Environment**, see the end) |
+| **Debug** | Reset, Fusion (test builds also include **Environment**) |
 
 There is a **search box** at the top of the navigation: type a setting name or a page name and each result names the page it lives on; Enter opens the first one, Esc only clears the box. Typing a page name (say "Storage") gives you that page itself, not every row inside it.
 
@@ -145,9 +145,9 @@ Checks whether a newer version of FutureOS is available, then downloads and inst
 
 ---
 
-## Debug (mostly test builds)
+## Debug
 
-In a release build this group holds only **Reset**; **Fusion** and **Environment** appear in test builds only.
+**Reset** and **Fusion** are available in all builds. Test builds also include **Environment**.
 
 ### Reset
 
@@ -160,7 +160,7 @@ Organizing the database is not here: it does not wipe anything, and it has moved
 
 Switches sign-in and API addresses between the **production** and **test** environment; switching signs you out and restarts the app, so you sign in again in the new environment. The same page carries the **community edition** switch, which hides commercial features (account balance, the Future provider and so on).
 
-### Fusion (test builds only)
+### Fusion
 
 Configures `/fusion` discussions: once enabled, `/fusion` starts a discussion between multiple models; turning it off does not stop a discussion already under way. The host frames the question and writes the summary, and 2–5 participant roles each pick their own model and thinking level; the same model can appear in several roles with different thinking levels.
 
@@ -168,7 +168,7 @@ Configures `/fusion` discussions: once enabled, `/fusion` starts a discussion be
 
 ## On the phone
 
-A paired phone has pages of the same name — **Permissions / Replies / Storage / Models / Providers / Skills / Scheduled tasks** — and they show that desktop's settings. The phone's own preferences (appearance, language, WeChat official account) live one level up. The phone's settings also have a search box at the top, with the same rules as the desktop.
+A paired phone has pages of the same name — **Permissions / Replies / Storage / Models / Fusion / Providers / Skills / Scheduled tasks** — and they show that desktop's settings. The phone's own preferences (appearance, language, WeChat official account) live one level up. The phone's settings also have a search box at the top, with the same rules as the desktop.
 
 ---
 
