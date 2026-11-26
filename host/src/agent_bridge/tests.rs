@@ -126,9 +126,12 @@ mod watchdog_tests {
     // ── settled-run repair ───────────────────────────────────────────
 
     #[test]
-    fn settled_row_is_alive_while_the_agent_executes_it() {
+    fn settled_row_is_held_when_the_agent_queues_it_behind_another_run() {
         // The reported bug's ledger answer: our row for run-1 is terminal while
         // the Agent is working on another run and holding ours in its queue.
+        // Alive — but not *executing*: restoring it as `running` put a turn that
+        // had not started on the "latest run" seat, and the open conversation
+        // drew a second, empty reply bubble for it.
         let ledger = plan_settled_run_reconciliation(
             &state(
                 r#"{"isStreaming": true, "activeRun": {"runId": "run-0"},
@@ -136,7 +139,7 @@ mod watchdog_tests {
             ),
             "run-1",
         );
-        assert_eq!(ledger, SettledRunLedger::Alive);
+        assert_eq!(ledger, SettledRunLedger::Held);
     }
 
     #[test]
@@ -1633,9 +1636,22 @@ mod bridge_tests {
 
         assert_eq!(ledger_reads(&mock, &run.id), 1);
         let record = crate::store::get_run(&run.id).expect("run").expect("some");
-        assert_eq!(record.status, "running", "the ledger owns this run");
+        // Restored as *queued*, not `running`: the ledger owns this run, but it
+        // is holding it behind the one executing. `running` put a turn that has
+        // not started on the "latest run" seat, and the open conversation then
+        // drew a live preview bubble for it — the duplicate empty reply of
+        // 2026-11-26.
+        assert_eq!(
+            record.status,
+            crate::store::QUEUED_RUN_STATUS,
+            "the ledger owns this run, but is only holding it"
+        );
         assert_eq!(record.error_message, None);
-        assert_eq!(record.error_type, None);
+        assert_eq!(
+            record.error_type.as_deref(),
+            Some("queue_accepted"),
+            "the same marker `mark_run_queued` writes for an accepted turn"
+        );
         assert_eq!(record.ended_at, None);
     }
 
