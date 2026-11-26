@@ -4,7 +4,7 @@ use crate::{
     Output,
 };
 
-pub const HELP:&str="future fusion — inspect multi-model consultations\n\nUsage:\n  future run '/fusion <task>'\n  future fusion settings [--enable|--disable] [--main MODEL --thinking LEVEL] [--participant MODEL --thinking LEVEL ...] [--json]\n  future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] [--json]\n\nWithout --run/--tool, shows the latest consultation in this session.\n--step reads an original child transcript in bounded pages. No model is called.\nStop the parent with future session abort <parent-session-id>.";
+pub const HELP:&str="future fusion — inspect multi-model consultations\n\nUsage:\n  future run '/fusion <task>'\n  future fusion settings [--enable|--disable] [--main MODEL --thinking LEVEL] [--participant MODEL --thinking LEVEL ...] [--panel-timeout SECONDS] [--json]\n  future fusion show <parent-session-id> [--run <id> --tool <id>] [--step <id>] [--offset <bytes>] [--json]\n\n--panel-timeout limits each analysis or review round. At expiry Fusion keeps completed reports and proceeds with the available material. Use 0 to clear the limit.\nWithout --run/--tool, shows the latest consultation in this session.\n--step reads an original child transcript in bounded pages. No model is called.\nStop the parent with future session abort <parent-session-id>.";
 
 pub async fn fusion(command: Option<&str>, args: &[String], out: &Output) -> Result<(), String> {
     if command.is_none()

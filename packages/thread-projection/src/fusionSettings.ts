@@ -14,6 +14,8 @@ export interface FusionConfiguration {
   run_timeout_secs: number;
   /** Policy v3: reset only on model reasoning/text; zero wall deadlines. */
   idle_timeout_secs?: number;
+  /** Optional wall-clock limit per participant analysis or review round. */
+  panel_timeout_secs?: number;
 }
 export interface FusionSettings { enabled: boolean; configuration: FusionConfiguration; revision: number }
 export interface FusionSettingsPatch { expected_revision: number; enabled?: boolean; configuration?: FusionConfiguration }
