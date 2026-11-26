@@ -34,13 +34,15 @@ pub(crate) fn choice(instructions: &str, options: &[(&str, &str)]) -> Value {
             .collect::<serde_json::Map<String, Value>>()})
 }
 
-/// Gateway route used by automatic approval (`decider` resolves to
-/// `pplx-decider-v1.2` on the evaluated deployment).
+/// Gateway route used by automatic approval. `decider` is backend-neutral: the
+/// gateway resolves it to whichever decision model is currently deployed, so a
+/// model upgrade is a server-side change rather than a client release.
 pub(crate) const APPROVAL_REVIEW_MODEL: &str = "decider";
-/// Model id the skill recommender asks for. The endpoint, request shape and
-/// response shape are the same as [`APPROVAL_REVIEW_MODEL`]'s, which is why the two callers
-/// only differ in this id — and why the approval reviewer keeps its own.
-pub(crate) const SKILL_RECO_MODEL: &str = "pplx-decider-v1.2";
+/// Model id the skill recommender asks for: the same backend-neutral `decider`
+/// route as automatic approval. The endpoint, request shape and response shape
+/// are shared with [`APPROVAL_REVIEW_MODEL`]; the two callers differ only in
+/// their classification policy.
+pub(crate) const SKILL_RECO_MODEL: &str = "decider";
 /// Fallback origin when the Future provider has no `base_url` configured.
 const DEFAULT_FUTURE_BASE: &str = "https://future-os.cn/api";
 /// The provider whose credential authenticates the call.

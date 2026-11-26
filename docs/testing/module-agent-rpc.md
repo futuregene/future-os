@@ -2604,7 +2604,7 @@ they are called out rather than buried.
 | `agent/src/rpc/commands/session_title.rs` : 521-525 | unreachable-in-this-environment | the success arm of `handle` (`Ok(data) => RpcResponse::ok(...)`): it needs a real LLM to answer with a title. `a_real_title_request_selects_the_configured_provider_and_fails_closed` now covers everything up to and including the request (model resolution, target construction, provider client, runtime dispatch); only the returned title is missing. Authoritative platform: an integration run against the real provider. | medium |
 | `agent/src/rpc/commands/session_lifecycle.rs` : fork/clone activation arms | **covered this revision — see the `session_lifecycle.rs` row above** (this line is kept only so a reader of an older revision finds the redirect). | — |
 | `agent/src/rpc/session.rs` : compaction ticket arms, cost fallbacks, history-merge helper (73 lines) | unreachable-in-this-environment | **superseded by the row above** (this line is kept only so a reader of an older revision finds the redirect): the ticket arms are covered as of this revision; the remaining lines and their categories are in the `agent/src/rpc/session.rs` row. | high |
-| `agent/src/rpc/commands/providers.rs` : 559-561 | unreachable-in-this-environment | the `SkillCandidatePayload` mapping in `cmd_suggest_skill` runs only when `skill_reco::suggest_skill` returns a candidate, which requires a signed-in, in-budget Jev service call; here it always returns `None` and the handler correctly answers `{"skill": null}`. | medium |
+| `agent/src/rpc/commands/providers.rs` : 559-561 | unreachable-in-this-environment | the `SkillCandidatePayload` mapping in `cmd_suggest_skill` runs only when `skill_reco::suggest_skill` returns a candidate, which requires a signed-in, in-budget decider service call; here it always returns `None` and the handler correctly answers `{"skill": null}`. | medium |
 
 ### Note on the two line views (why the two numbers differ)
 
@@ -2651,7 +2651,7 @@ cheapest first:
    runner with no sandbox host installed) and `agent/src/rpc/approval.rs` (Windows capability approval on a
    provisioned host — same).
 3. `agent/src/rpc/commands/session_title.rs` (a real provider answer) and `agent/src/rpc/commands/providers.rs`
-   559-561 (a signed-in, in-budget Jev service call).
+   559-561 (a signed-in, in-budget decider service call).
 
 ## 7. Findings
 
@@ -2838,7 +2838,7 @@ serialization and platform-cfg cases); and this revision repaired no weak test b
   replay the idempotent commit instead, (iv) deleting the dead `on_checkpoint` wiring (production change,
   out of remit — reported as F16).
 * **Uncertainty**: (a) the remaining `medium` rows in §6 (settings.rs probe, approval.rs Windows capability,
-  the `mod.rs` reconciliation arms, session_title real answer, providers.rs Jev call) are environment/seam
+  the `mod.rs` reconciliation arms, session_title real answer, providers.rs decider call) are environment/seam
   statements, not proofs of unreachability — they are listed explicitly so a reviewer can overturn them;
   (b) F16 is a *reading* of the wiring plus the compiler-visible types, not an observed runtime miss — it is
   falsifiable by a test that makes `prepare_with_journal_and_summary` return `Compacted` with `ticket: None`

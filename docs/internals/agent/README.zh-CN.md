@@ -47,7 +47,7 @@
 | `sandbox/` | 操作系统沙箱后端与基于路径的审批规则 | `agent/src/sandbox/mod.rs`、`agent/src/sandbox/backend.rs`、`agent/src/sandbox/rules.rs` |
 | `approval_review/` | 对 Ask 请求分类的模型审查；执行与否由确定性策略决定 | `agent/src/approval_review/mod.rs`、`agent/src/approval_review/policy.rs` |
 | `skills/` | 从 `~/.future/agent/skills/` 与 `~/.agents/skills/` 发现技能 | `agent/src/skills/mod.rs` |
-| `skill_reco/` | Jev 驱动的 `suggest_skill` 推荐 | `agent/src/skill_reco/mod.rs` |
+| `skill_reco/` | decider 驱动的 `suggest_skill` 推荐 | `agent/src/skill_reco/mod.rs` |
 | `cli/` | `future-agent` 与 `future agent` 共用的 clap 入口 | `agent/src/cli.rs` |
 | `logfile.rs` | 日志文件镜像：终端与文件内容保持一致 | `agent/src/logfile.rs` |
 | `utils/` | home/session 目录、ID 生成、路径辅助 | `agent/src/utils/mod.rs` |
