@@ -1023,6 +1023,8 @@ export const resources = {
           attachment_album_unavailable:
             "This phone has no system gallery or photo picker. Use Choose files instead.",
           attachment_failed: "The attachment could not be added.",
+          attachment_file_unreadable:
+            "This file could not be read, so it was not added. Try choosing it again.",
         },
       },
       desktopSettings: {
@@ -2255,6 +2257,7 @@ export const resources = {
           attachment_album_unavailable:
             "此手机没有可用的系统相册或照片选择器。可以使用「选择手机文件」。",
           attachment_failed: "无法添加附件。",
+          attachment_file_unreadable: "这个文件读不出来，没能添加。请重新选择。",
         },
       },
       desktopSettings: {
