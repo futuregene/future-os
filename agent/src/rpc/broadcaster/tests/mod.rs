@@ -2,6 +2,7 @@ use super::*;
 mod delivery;
 mod journal_lifecycle;
 mod journal_replay;
+mod live_reasoning;
 mod projection;
 mod writer;
 

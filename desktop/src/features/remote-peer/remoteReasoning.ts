@@ -15,9 +15,9 @@ import { requestRemotePeer } from "./remotePeerClient";
  * was sent boundaries alone can address: it has no entry id or content key for
  * the block. The host resolves it against the run's entries.
  *
- * A `null` answer means the block is not readable — a run still writing it, or
- * an index the run does not have. That is not an error: the row says so rather
- * than pretending the reasoning was empty.
+ * A `null` answer means the block is not readable — an index the run does not
+ * have, or one written while no live projection could still describe it. That is
+ * not an error: the row says so rather than pretending the reasoning was empty.
  */
 
 interface ReasoningBody {

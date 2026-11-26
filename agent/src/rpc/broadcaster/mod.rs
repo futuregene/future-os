@@ -11,6 +11,7 @@ mod journal_control;
 mod journal_metrics;
 mod journal_writer;
 mod projection;
+mod reasoning;
 mod replay;
 #[cfg(test)]
 pub(in crate::rpc) use projection::apply_to_projection;
