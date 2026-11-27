@@ -191,16 +191,6 @@ export function RemoteFilesPanel({
                 {t("filesOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : desktopId })}
               </span>
             )}
-        {!showingHistory
-          ? (
-              <IconButton
-                disabled={files.loading}
-                icon={<RefreshCw className={cn("size-3.5", files.loading && "animate-spin")} />}
-                label={t("filesRefresh")}
-                onClick={() => void files.refresh()}
-              />
-            )
-          : null}
         <IconButton
           icon={<PanelRightClose className="size-3.5" />}
           label={t("filesClose")}
@@ -222,6 +212,10 @@ export function RemoteFilesPanel({
           showingHistory && "hidden",
         )}
       >
+        {/* The path row, and the same slot the history view's refresh sits in:
+            below the tab strip, on the row that says what is being read. A
+            refresh up beside the tabs read as part of the switch between them,
+            and it made the two views put one control in two different rows. */}
         <div className="mb-2 flex items-center gap-1">
           <IconButton
             disabled={files.loading || files.parent === null}
@@ -232,6 +226,12 @@ export function RemoteFilesPanel({
           <span className="min-w-0 flex-1 truncate text-xs text-ink-muted" title={files.listing?.path ?? undefined}>
             {files.listing?.path || files.listing?.rootPath || ""}
           </span>
+          <IconButton
+            disabled={files.loading}
+            icon={<RefreshCw className={cn("size-3.5", files.loading && "animate-spin")} />}
+            label={t("filesRefresh")}
+            onClick={() => void files.refresh()}
+          />
         </div>
 
         {files.error ? <p className="mb-2 text-xs text-danger">{files.error}</p> : null}
