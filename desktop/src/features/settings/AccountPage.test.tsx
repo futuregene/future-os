@@ -9,28 +9,67 @@ import { AccountPage } from "./AccountPage";
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mocks = vi.hoisted(() => ({
+  clearTokenPlanCache: vi.fn(),
   getFutureEnvironment: vi.fn(),
+  getFutureTokenPlan: vi.fn(),
   logoutFutureProvider: vi.fn(),
   openExternalUrl: vi.fn(),
+  peekFutureTokenPlan: vi.fn(),
 }));
 
 vi.mock("../../integrations/agent/providers", () => ({
+  clearFutureTokenPlanCache: mocks.clearTokenPlanCache,
   getFutureEnvironment: mocks.getFutureEnvironment,
+  getFutureTokenPlan: mocks.getFutureTokenPlan,
   logoutFutureProvider: mocks.logoutFutureProvider,
+  peekFutureTokenPlan: mocks.peekFutureTokenPlan,
 }));
 vi.mock("../../integrations/storage/files", () => ({ openExternalUrl: mocks.openExternalUrl }));
 
 const PRODUCTION = { environment: "production", platformUrl: "https://platform.example.com" };
 
+/**
+ * An account that never subscribed: the platform answers with an inactive,
+ * empty snapshot rather than an error.
+ */
+const NO_SUBSCRIPTION = {
+  active: false,
+  grantedCredits: 0,
+  usedCredits: 0,
+  remainingCredits: 0,
+  eligibleModels: [],
+};
+
+const ACTIVE_PLAN = {
+  active: true,
+  planCode: "plus",
+  name: "Plus",
+  status: "active",
+  startsAt: "2026-11-01T00:00:00Z",
+  endsAt: "2026-12-25T15:59:00Z",
+  windowStart: "2026-11-26T00:00:00Z",
+  windowEnd: "2026-11-26T04:00:00Z",
+  windowResetsAt: "2026-11-26T04:00:00Z",
+  grantedCredits: 5,
+  usedCredits: 1.5,
+  remainingCredits: 3.5,
+  eligibleModels: ["deepseek-v3"],
+};
+
 const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] = [];
 
 beforeEach(() => {
+  mocks.clearTokenPlanCache.mockReset();
   mocks.getFutureEnvironment.mockReset();
   mocks.getFutureEnvironment.mockResolvedValue(PRODUCTION);
   mocks.logoutFutureProvider.mockReset();
   mocks.logoutFutureProvider.mockResolvedValue({ builtin: [], custom: [] });
   mocks.openExternalUrl.mockReset();
   mocks.openExternalUrl.mockResolvedValue(undefined);
+  mocks.peekFutureTokenPlan.mockReset();
+  mocks.peekFutureTokenPlan.mockReturnValue(null);
+  mocks.getFutureTokenPlan.mockReset();
+  mocks.getFutureTokenPlan.mockResolvedValue(NO_SUBSCRIPTION);
 });
 
 afterEach(() => {
@@ -384,5 +423,109 @@ describe("accountPage refresh and community edition", () => {
     expect(onRefreshBalance).not.toHaveBeenCalled();
     // The account actions themselves are still offered.
     expect(button(container, "View account info")).toBeTruthy();
+  });
+});
+
+describe("accountPage subscription", () => {
+  it("shows the plan, its end date and the current window's usage", async () => {
+    mocks.getFutureTokenPlan.mockResolvedValue(ACTIVE_PLAN);
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("Subscription");
+    expect(container.textContent).toContain("Plus · Active");
+    expect(container.textContent).toContain("Ends");
+    expect(container.textContent).toContain("1.5 of 5 credits used");
+    expect(container.textContent).toContain("3.5 credits left");
+    const bar = container.querySelector("[role=progressbar]")!;
+    expect(bar.getAttribute("aria-valuenow")).toBe("30");
+    expect(button(container, "Subscription details")).toBeTruthy();
+  });
+
+  it("opens the site's subscription page while subscribed", async () => {
+    mocks.getFutureTokenPlan.mockResolvedValue(ACTIVE_PLAN);
+    const container = await renderPage({ balance: 12 });
+
+    await act(async () => {
+      button(container, "Subscription details")!.click();
+    });
+
+    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.example.com/plans");
+  });
+
+  it("sends a visitor without a subscription to the site's subscription page", async () => {
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("No subscription yet");
+    expect(container.textContent).toContain("grants quota per window");
+
+    await act(async () => {
+      button(container, "Subscribe now")!.click();
+    });
+
+    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.example.com/plans");
+  });
+
+  it("retries a failed subscription read instead of pretending there is none", async () => {
+    mocks.getFutureTokenPlan.mockRejectedValue(new Error("platform unreachable"));
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("Subscription temporarily unavailable");
+    const calls = mocks.getFutureTokenPlan.mock.calls.length;
+
+    await act(async () => {
+      button(container, "Retry")!.click();
+    });
+
+    expect(mocks.getFutureTokenPlan.mock.calls.length).toBe(calls + 1);
+  });
+
+  it("shows a loading row until the subscription answers", async () => {
+    mocks.getFutureTokenPlan.mockReturnValue(new Promise(() => {}));
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("Loading subscription…");
+    expect(container.querySelector("[role=progressbar]")).toBeNull();
+  });
+
+  it("marks an expired subscription and explains why no window is shown", async () => {
+    mocks.getFutureTokenPlan.mockResolvedValue({
+      ...ACTIVE_PLAN,
+      active: false,
+      status: "expired",
+      usedCredits: 5,
+      remainingCredits: 0,
+    });
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("Plus · Expired");
+    expect(container.textContent).toContain("renewing grants the current window again");
+    expect(container.querySelector("[role=progressbar]")).toBeNull();
+  });
+
+  it("styles a window overrun as full and says so", async () => {
+    mocks.getFutureTokenPlan.mockResolvedValue({
+      ...ACTIVE_PLAN,
+      usedCredits: 7,
+      remainingCredits: 0,
+    });
+    const container = await renderPage({ balance: 12 });
+
+    expect(container.textContent).toContain("7 of 5 credits used");
+    expect(container.textContent).toContain("over this window's quota");
+    expect(container.querySelector("[role=progressbar]")!.getAttribute("aria-valuenow")).toBe("100");
+  });
+
+  it("hides the subscription in the community edition and does not fetch it", async () => {
+    const container = await renderPage({ communityEdition: true, balance: 12 });
+
+    expect(container.textContent).not.toContain("Subscription");
+    expect(mocks.getFutureTokenPlan).not.toHaveBeenCalled();
+  });
+
+  it("hides the subscription while signed out and does not fetch it", async () => {
+    const container = await renderPage({ sessionStatus: "signed_out" });
+
+    expect(container.textContent).not.toContain("Subscription");
+    expect(mocks.getFutureTokenPlan).not.toHaveBeenCalled();
   });
 });

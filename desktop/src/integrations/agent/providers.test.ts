@@ -4,17 +4,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearFutureBalanceCache,
   clearFutureProfileCache,
+  clearFutureTokenPlanCache,
   deleteCustomProvider,
   FUTURE_PROVIDER_ID,
   getFutureAuthState,
   getFutureBalance,
   getFutureEnvironment,
   getFutureProfile,
+  getFutureTokenPlan,
   listAgentProviders,
   logoutFutureProvider,
   peekAgentProviders,
   peekFutureBalance,
   peekFutureProfile,
+  peekFutureTokenPlan,
   pollFutureLogin,
   probeThinkingLevel,
   setBuiltinProviderBaseUrl,
@@ -68,6 +71,7 @@ describe("agent provider catalogue", () => {
     invokeMock.mockReset();
     clearFutureProfileCache();
     clearFutureBalanceCache();
+    clearFutureTokenPlanCache();
   });
 
   it("lists providers through the native command and remembers the response", async () => {
@@ -341,5 +345,35 @@ describe("account caches", () => {
     invokeMock.mockRejectedValueOnce("not logged in");
     await expect(getFutureProfile()).rejects.toThrow("not logged in");
     expect(peekFutureProfile()).toBeNull();
+  });
+
+  it("serves the subscription from the session cache until forced", async () => {
+    const plan = {
+      active: true,
+      planCode: "plus",
+      name: "Plus",
+      grantedCredits: 5,
+      usedCredits: 1,
+      remainingCredits: 4,
+      eligibleModels: [],
+    };
+    invokeMock.mockResolvedValueOnce(plan);
+    await expect(getFutureTokenPlan()).resolves.toBe(plan);
+    await expect(getFutureTokenPlan()).resolves.toBe(plan);
+    expect(commands()).toEqual(["get_future_token_plan"]);
+
+    const usedMore = { ...plan, usedCredits: 3, remainingCredits: 2 };
+    invokeMock.mockResolvedValueOnce(usedMore);
+    await expect(getFutureTokenPlan(true)).resolves.toBe(usedMore);
+    expect(peekFutureTokenPlan()).toBe(usedMore);
+
+    clearFutureTokenPlanCache();
+    expect(peekFutureTokenPlan()).toBeNull();
+  });
+
+  it("a rejected subscription fetch is not cached", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("signed out"));
+    await expect(getFutureTokenPlan()).rejects.toThrow("signed out");
+    expect(peekFutureTokenPlan()).toBeNull();
   });
 });
