@@ -144,4 +144,89 @@ describe("useStickyAutoScroll", () => {
     hook.unmount();
     container.remove();
   });
+
+  /**
+   * A transcript whose two messages end at 700px and 1_700px of a 2_000px
+   * document: the last 300px is the spacer the real transcript reserves for the
+   * composer, inside an 800px viewport. Geometry is in content coordinates, so
+   * every row reports itself at `top - scrollTop`, as the browser would.
+   */
+  function mountTranscript() {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const first = document.createElement("div");
+    first.dataset.messageId = "m1";
+    const newest = document.createElement("div");
+    newest.dataset.messageId = "m2";
+    container.append(first, newest);
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 800 });
+    Object.defineProperty(container, "scrollHeight", { configurable: true, value: 2_000 });
+    vi.spyOn(container, "getBoundingClientRect").mockImplementation(
+      () => ({ top: 0, bottom: 800 }) as DOMRect,
+    );
+    const rectOf = (contentTop: number, height: number) => () =>
+      ({
+        top: contentTop - container.scrollTop,
+        bottom: contentTop + height - container.scrollTop,
+      }) as DOMRect;
+    vi.spyOn(first, "getBoundingClientRect").mockImplementation(rectOf(0, 700));
+    vi.spyOn(newest, "getBoundingClientRect").mockImplementation(rectOf(700, 1_000));
+    const scrollRef = { current: container as HTMLElement | null };
+    let contentKey: unknown = 1;
+    const hook = renderHook(() => useStickyAutoScroll({ scrollRef, contentKey }));
+    return {
+      container,
+      hook,
+      touchContent: () => {
+        contentKey = `k${Math.random()}`;
+        hook.rerender();
+      },
+      dispose: () => {
+        hook.unmount();
+        container.remove();
+      },
+    };
+  }
+
+  it("keeps the jump button away while the newest message is already in view", () => {
+    // regression: the transcript ends in a spacer as tall as the composer, plus the
+    // pane's bottom padding, and no scroll closes that tail. Measured to the
+    // content's end, a reader parked on the newest message reads 250px from the
+    // bottom — past the 240px threshold — and is offered a jump to the message
+    // filling the screen. Measured to the newest message, that distance is negative
+    // there, and the button stays away. Reverting to the content-end distance turns
+    // this test red on the first expectation (250px is what the button used to read).
+    const { container, hook, touchContent, dispose } = mountTranscript();
+
+    // The newest message's end sits 50px above the viewport's bottom edge, while the
+    // document's end sits 250px below it.
+    container.scrollTop = 950;
+    act(() => hook.current.handleScroll());
+    expect(container.scrollHeight - container.clientHeight - container.scrollTop).toBe(250);
+    expect(hook.current.showJumpToLatest).toBe(false);
+
+    // A later layout change settles through the same measure and adds nothing.
+    touchContent();
+    expect(container.scrollTop).toBe(950);
+    expect(hook.current.showJumpToLatest).toBe(false);
+
+    dispose();
+  });
+
+  it("offers the jump button once the newest message itself is out of view", () => {
+    // The other side of the same measure: any fix that simply never shows the
+    // button would pass the test above and still leave history hard to get back to.
+    const { container, hook, dispose } = mountTranscript();
+
+    // The newest message's end is 300px below the viewport's bottom edge.
+    container.scrollTop = 600;
+    act(() => hook.current.handleScroll());
+    expect(hook.current.showJumpToLatest).toBe(true);
+
+    // Coming back up to the newest message takes it away again.
+    act(() => hook.current.scrollToLatest());
+    expect(hook.current.showJumpToLatest).toBe(false);
+
+    dispose();
+  });
 });

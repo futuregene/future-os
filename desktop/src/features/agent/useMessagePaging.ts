@@ -82,6 +82,14 @@ interface UseMessagePagingResult {
 
 /** Distance from the top that counts as "at the top" for the load hint. */
 const TOP_THRESHOLD_PX = 8;
+/**
+ * Pages one read may pull in on its own to fill its viewport.
+ *
+ * A bound, not a plan: a page normally fills the container in one or two, and a
+ * conversation whose turns are tiny must not turn opening it into an unbounded
+ * chain of reads.
+ */
+const AUTOFILL_MAX_PAGES = 8;
 /** Block upward momentum after reaching the top or restoring a history page. */
 const WHEEL_COOLDOWN_MS = 1500;
 /**
@@ -352,6 +360,55 @@ export function useMessagePaging({
     scrollRef,
     userExchangeCount,
   ]);
+
+  /**
+   * Fill the viewport before handing over to the gesture path.
+   *
+   * A page that does not overflow has no thumb (the floating scrollbar's height
+   * is 0 and its hit area is `pointer-events-none`), no scroll event, and — at
+   * rest — no "load older" button either: the only gesture left is an upward
+   * wheel over the transcript. So a first page shorter than the container reads
+   * as a conversation that holds one exchange and cannot be paged up, even
+   * though the store has all of it (reported 2026-11-27 on a 9.7k-row session
+   * whose newest turn is a tool sequence: the exchange-aligned first page is
+   * one short exchange, 128 earlier questions unreachable).
+   *
+   * No anchor to preserve and no cooldown to spend: nothing above a viewport
+   * that does not scroll can be under the reader's eye, so the newest exchange
+   * is pinned while the rest fills in above it.
+   */
+  const autofillPagesRef = useRef(0);
+  const autofillInFlightRef = useRef(false);
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container)
+      return;
+    // An unmeasurable container (not yet laid out, or a cell collapsed to zero)
+    // says nothing about whether the page is short; wait for a real viewport.
+    if (container.clientHeight <= 0)
+      return;
+    if (container.scrollHeight > container.clientHeight) {
+      // Full: from here the top collision and the wheel own the older pages.
+      autofillPagesRef.current = 0;
+      return;
+    }
+    if (
+      !hasOlderHistory
+      || !loadOlderHistory
+      || autofillInFlightRef.current
+      || autofillPagesRef.current >= AUTOFILL_MAX_PAGES
+    ) {
+      return;
+    }
+    autofillPagesRef.current += 1;
+    autofillInFlightRef.current = true;
+    scrollToLatest();
+    void loadOlderHistory()
+      .catch(() => {})
+      .finally(() => {
+        autofillInFlightRef.current = false;
+      });
+  }, [hasOlderHistory, loadOlderHistory, messages, scrollRef, scrollToLatest]);
 
   useLayoutEffect(() => {
     if (!dataPendingRef.current)

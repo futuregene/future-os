@@ -450,6 +450,37 @@ it("re-reads the folder on demand", async () => {
   await view.unmount();
 });
 
+/**
+ * The refresh sits on the row that says what is being read, not on the tab
+ * strip.
+ *
+ * The history view has always kept its own refresh down there, in the row with
+ * the repository's name; the files view put the same control up beside the tabs,
+ * where it read as part of switching between them and where the two views
+ * disagreed about where one control lives.
+ */
+it("keeps the refresh on the row under the tab strip", async () => {
+  gitCommits.mockResolvedValue({
+    commits: [],
+    isRepo: true,
+    path: "/home/me/repo",
+    repoName: "repo",
+    truncated: false,
+  });
+  const view = await mount();
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  const refresh = view.container.querySelector<HTMLButtonElement>("button[aria-label='Re-read this folder']")!;
+  const up = view.container.querySelector<HTMLButtonElement>("button[aria-label='Up']")!;
+  // The tab strip's own header, and the path it names: the button belongs to the
+  // second and not to the first.
+  expect(view.container.querySelector("header")!.contains(refresh)).toBe(false);
+  expect(refresh.parentElement).toBe(up.parentElement);
+  await view.unmount();
+});
+
 /** Collapsed, it is the floating toggle over the conversation header. */
 it("shows only the toggle when collapsed, and reports the toggle", async () => {
   const view = await mount({ expanded: false });
