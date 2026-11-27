@@ -283,7 +283,7 @@
     "planStatusCanceled": "已取消",
     "planEndsAt": "到期时间",
     "planView": "订阅详情",
-    "viewPlans": "查看套餐",
+    "viewPlans": "去订阅",
     "windowQuota": "当前窗口额度",
     "windowUsage": "已用 {{used}} / {{granted}} credits",
     "windowRemaining": "剩余 {{remaining}} credits",

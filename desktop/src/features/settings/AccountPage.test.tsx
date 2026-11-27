@@ -441,7 +441,7 @@ describe("accountPage subscription", () => {
     expect(button(container, "Subscription details")).toBeTruthy();
   });
 
-  it("opens the subscription console page while subscribed", async () => {
+  it("opens the site's subscription page while subscribed", async () => {
     mocks.getFutureTokenPlan.mockResolvedValue(ACTIVE_PLAN);
     const container = await renderPage({ balance: 12 });
 
@@ -449,17 +449,17 @@ describe("accountPage subscription", () => {
       button(container, "Subscription details")!.click();
     });
 
-    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.example.com/platform/#plan");
+    expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.example.com/plans");
   });
 
-  it("says an account has no subscription and offers the plan catalogue", async () => {
+  it("sends a visitor without a subscription to the site's subscription page", async () => {
     const container = await renderPage({ balance: 12 });
 
     expect(container.textContent).toContain("No subscription yet");
     expect(container.textContent).toContain("grants quota per window");
 
     await act(async () => {
-      button(container, "View plans")!.click();
+      button(container, "Subscribe now")!.click();
     });
 
     expect(mocks.openExternalUrl).toHaveBeenCalledExactlyOnceWith("https://platform.example.com/plans");

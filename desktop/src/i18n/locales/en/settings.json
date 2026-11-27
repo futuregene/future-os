@@ -283,7 +283,7 @@
     "planStatusCanceled": "Canceled",
     "planEndsAt": "Ends",
     "planView": "Subscription details",
-    "viewPlans": "View plans",
+    "viewPlans": "Subscribe now",
     "windowQuota": "Current window quota",
     "windowUsage": "{{used}} of {{granted}} credits used",
     "windowRemaining": "{{remaining}} credits left",

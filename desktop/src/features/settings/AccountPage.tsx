@@ -91,22 +91,26 @@ export function AccountPage({
     await openExternalUrl(`${platformUrl}/platform/#recharge`);
   }
 
-  async function handleOpenPlans() {
+  // Both subscription actions land on the site's public subscription page.
+  // The console's `#plan` view needs a web login of its own — a desktop session
+  // does not carry over to the external browser — so deep-linking there opened
+  // the marketing home instead. `/plans` renders for everyone and shows the
+  // current tier (and its renewal) to a signed-in visitor.
+  async function handleOpenSubscriptionPage() {
     if (!platformUrl)
       return;
-    await openExternalUrl(`${platformUrl}/plans`);
-  }
-
-  async function handleManagePlan() {
-    if (!platformUrl)
-      return;
-    await openExternalUrl(`${platformUrl}/platform/#plan`);
+    try {
+      await openExternalUrl(`${platformUrl}/plans`);
+    }
+    catch (error) {
+      setActionError(errorMessage(error));
+    }
   }
 
   // Subscription rows: tier, end date and the current window's usage. The
   // platform reports "no subscription" as an empty, inactive snapshot rather
   // than an error, so an account that never subscribed still gets a row that
-  // says so and a way to the plan catalogue.
+  // says so and a way to the site's subscription page.
   const plan = subscription.tokenPlan;
   const planName = plan?.name || plan?.planCode || "";
   const hasSubscription = Boolean(plan?.planCode);
@@ -153,7 +157,7 @@ export function AccountPage({
         >
           <Button
             disabled={!platformUrl}
-            onClick={() => void handleManagePlan()}
+            onClick={() => void handleOpenSubscriptionPage()}
             size="sm"
             variant="secondary"
           >
@@ -211,7 +215,7 @@ export function AccountPage({
       <SettingsRow description={t("account.planNone")} title={t("account.plan")}>
         <Button
           disabled={!platformUrl}
-          onClick={() => void handleOpenPlans()}
+          onClick={() => void handleOpenSubscriptionPage()}
           size="sm"
           variant="primary"
         >
