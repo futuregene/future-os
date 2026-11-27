@@ -687,6 +687,44 @@ function threadEntries(threadId: string): MockEntry[] {
 }
 
 /**
+ * `?pagedHistory=<rows>`: the open conversation, served the way a store of many
+ * pages serves it — the newest `<rows>` display entries with `hasMore` behind
+ * them — instead of the whole transcript with `hasMore: false`.
+ *
+ * Nothing could be captured in the paged shape before, and that shape is the
+ * one that broke: the agent cuts a page at a question and tool rows eat its row
+ * budget, so a conversation whose newest turn is a tool sequence opens on one
+ * short exchange. A page shorter than its viewport has no scrollbar thumb, no
+ * scroll event and no button at rest, so nothing could ask for the older pages
+ * (2026-11-27). `hasMore`/`nextOffset` follow the host's cursor: `before` is an
+ * exclusive upper bound over display ordinals, and the answer reports the
+ * ordinal of the oldest row it carried.
+ */
+function pagedHistoryPage(
+  threadId: string,
+  before: number | null,
+  limit: number,
+): { entries: MockEntry[]; hasMore: boolean; nextOffset: number } | null {
+  if (typeof window === "undefined")
+    return null;
+  const rows = Number.parseInt(
+    new URLSearchParams(window.location.search).get("pagedHistory") ?? "",
+    10,
+  );
+  if (!Number.isFinite(rows) || rows <= 0)
+    return null;
+  const all = threadEntries(threadId);
+  const end = before === null || before > all.length ? all.length : Math.max(0, before);
+  // At most `rows`, and never more than the caller asked for.
+  const start = Math.max(0, end - Math.min(rows, Math.max(limit, 1)));
+  return {
+    entries: all.slice(start, end),
+    hasMore: start > 0,
+    nextOffset: start,
+  };
+}
+
+/**
  * Demo files that exist as real PNGs under `shot/assets/`; a path maps to the
  * URL the browser can load.
  */
@@ -1047,8 +1085,13 @@ const handlers: Record<string, (args: any) => unknown> = {
    * all. The bytes are UTF-8 JSON, which is what `decodeJsonBytes` expects.
    */
   begin_session_history_transfer: (args) => {
+    const paged = pagedHistoryPage(
+      args?.threadId ?? "",
+      args?.before ?? null,
+      Number(args?.limit ?? 10),
+    );
     const entries = threadEntries(args?.threadId ?? "");
-    const page = { entries, hasMore: false, nextOffset: entries.length };
+    const page = paged ?? { entries, hasMore: false, nextOffset: entries.length };
     const bytes = new TextEncoder().encode(JSON.stringify(page));
     const id = `shot_transfer_${++historyTransferSeq}`;
     historyTransfers.set(id, bytes);
@@ -1066,6 +1109,13 @@ const handlers: Record<string, (args: any) => unknown> = {
     return null;
   },
   get_session_entries_page: (args) => {
+    const paged = pagedHistoryPage(
+      args?.threadId ?? "",
+      args?.before ?? null,
+      Number(args?.limit ?? 10),
+    );
+    if (paged)
+      return paged;
     const entries = threadEntries(args?.threadId ?? "");
     return { entries, hasMore: false, nextOffset: entries.length };
   },

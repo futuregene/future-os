@@ -1,0 +1,17 @@
+{
+  "_comment": "一段存储里有多页的对话（`?pagedHistory=3`）：首屏只有最新的一轮——一个用户问题、回复、工具行。页面比视口短时既没有浮标（高度 0，`pointer-events-none`）、也不会产生 scroll 事件，静止时还没有「加载更早」按钮，于是读者没有任何手势可以往回翻，只能看到最后一轮问答。这条场景钉住「转录自己把视口填满」：读完之后内容必须溢出让浮标出来，并且仍停在最新一条上。",
+  "desktop": {
+    "thread-history-fills-viewport": {
+      "note": "首屏只有一轮问答（多页存储里的一页）。转录要自己把视口填满：不溢出的页面既没有浮标也没有可抓的地方，读者只能看到最后一轮。这里读完之后内容必须溢出、浮标出现，并且视图仍停在最新一条消息上。",
+      "query": "?pagedHistory=3",
+      "steps": [
+        { "wait": 2500 },
+        {
+          "eval": "(() => {\n  const c = document.querySelector('[data-chat-scroll=\"true\"]');\n  if (!c) throw new Error('the transcript is not on screen');\n  const rows = [...c.querySelectorAll('[data-message-id]')];\n  if (rows.length < 4)\n    throw new Error('the transcript still holds only the tail page: ' + rows.length + ' rows');\n  if (c.scrollHeight <= c.clientHeight + 40)\n    throw new Error('the transcript does not fill its viewport (' + c.scrollHeight + ' in ' + c.clientHeight + '), so it has no scrollbar and no way to page up');\n  const frame = c.parentElement;\n  const thumb = [...(frame ? frame.querySelectorAll('div') : [])]\n    .find(node => /height: [1-9]/.test(node.getAttribute('style') || ''));\n  if (!thumb) throw new Error('the floating scrollbar has no thumb');\n  const box = c.getBoundingClientRect();\n  const newest = rows[rows.length - 1].getBoundingClientRect();\n  if (newest.bottom > box.bottom + 2)\n    throw new Error('the view did not settle on the newest message: ' + Math.round(newest.bottom - box.bottom) + 'px below the fold');\n  return 'filled: ' + rows.length + ' rows';\n})()"
+        },
+        { "wait": 400 },
+        { "shot": "d-thread-history-fills.png" }
+      ]
+    }
+  }
+}

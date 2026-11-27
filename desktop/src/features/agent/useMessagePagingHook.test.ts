@@ -1093,3 +1093,135 @@ describe("useMessagePaging", () => {
     h.unmount();
   });
 });
+
+/**
+ * A transcript whose height is measured in fictitious rows, so "the page does
+ * not fill the viewport" is a state a test can hold still: jsdom has no layout,
+ * and an element that does not overflow is the one case the gesture path cannot
+ * reach (no thumb, no scroll event, no button).
+ */
+function setupAutofill({
+  rows,
+  pageRows,
+  pages,
+  clientHeight,
+}: {
+  rows: number;
+  pageRows: number;
+  pages: number;
+  clientHeight: number;
+}) {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const state = { rows, pages };
+  Object.defineProperty(container, "clientHeight", { value: clientHeight });
+  Object.defineProperty(container, "scrollHeight", { get: () => state.rows * 40 });
+  const scrollRef = { current: container };
+  const loadOlderHistory = vi.fn(async () => {
+    if (state.pages <= 0)
+      return;
+    state.pages -= 1;
+    state.rows += pageRows;
+  });
+  const h = renderHook(() =>
+    useMessagePaging({
+      // A fresh identity per render is what a parent's merge hands the hook.
+      messages: [...MESSAGES],
+      scrollRef,
+      userExchangeCount: 2,
+      hasOlderHistory: state.pages > 0,
+      loadOlderHistory,
+    }),
+  );
+  return { container, h, loadOlderHistory, state };
+}
+
+/** Let a landed page's promise continuations run before the next rerender. */
+async function settleAutofill() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe("a page that cannot fill its viewport", () => {
+  it("loads older pages until the viewport is full", async () => {
+    // 2 rows (80px) in a 200px viewport: nothing overflows, so no thumb exists
+    // and no scroll event can fire — a conversation that opened on one short
+    // exchange used to be stuck here.
+    const { container, h, loadOlderHistory } = setupAutofill({
+      rows: 2,
+      pageRows: 1,
+      pages: 10,
+      clientHeight: 200,
+    });
+    await settleAutofill();
+    expect(loadOlderHistory).toHaveBeenCalledTimes(1);
+
+    // The parent lands each page as a new messages array, exactly as
+    // useThreadMessages does, and the hook measures again.
+    for (let index = 0; index < 10 && container.scrollHeight <= 200; index++) {
+      h.rerender();
+      await settleAutofill();
+    }
+
+    expect(container.scrollHeight).toBeGreaterThan(200);
+    expect(loadOlderHistory).toHaveBeenCalledTimes(4);
+
+    // Full: the top collision and the wheel own everything older from here.
+    h.rerender();
+    await settleAutofill();
+    expect(loadOlderHistory).toHaveBeenCalledTimes(4);
+
+    // The newest exchange is still what the reader is looking at, not the
+    // oldest row that just arrived above it.
+    expect(container.scrollTop).toBe(container.scrollHeight);
+    h.unmount();
+    container.remove();
+  });
+
+  it("leaves a page that already overflows to the gesture path", async () => {
+    const { h, loadOlderHistory } = setupAutofill({
+      rows: 20,
+      pageRows: 1,
+      pages: 10,
+      clientHeight: 200,
+    });
+    await settleAutofill();
+    h.rerender();
+    await settleAutofill();
+    expect(loadOlderHistory).not.toHaveBeenCalled();
+    h.unmount();
+  });
+
+  it("stops at the bound when page after page is still too short", async () => {
+    // A pathological store: every page is one tiny row and the container is
+    // enormous. Opening a conversation must not walk the whole history.
+    const { h, loadOlderHistory } = setupAutofill({
+      rows: 1,
+      pageRows: 1,
+      pages: 40,
+      clientHeight: 100_000,
+    });
+    await settleAutofill();
+    for (let index = 0; index < 20; index++) {
+      h.rerender();
+      await settleAutofill();
+    }
+    expect(loadOlderHistory).toHaveBeenCalledTimes(8);
+    h.unmount();
+  });
+
+  it("asks for nothing when the store holds no older history", async () => {
+    const { h, loadOlderHistory, state } = setupAutofill({
+      rows: 2,
+      pageRows: 1,
+      pages: 0,
+      clientHeight: 200,
+    });
+    await settleAutofill();
+    expect(state.pages).toBe(0);
+    expect(loadOlderHistory).not.toHaveBeenCalled();
+    h.unmount();
+  });
+});
