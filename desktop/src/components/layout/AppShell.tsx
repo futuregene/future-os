@@ -58,7 +58,7 @@ import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButt
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
 import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
-import { applyThreadApprovalTier, defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
+import { applyThreadApprovalTier, callableModelOptions, defaultAgentModelId, modelKey, modelOption, readLastUsedModel, resolveInitialModelId } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { getFutureEnvironment } from "../../integrations/agent/providers";
 import { refreshSkills } from "../../integrations/skills/skillsClient";
@@ -99,6 +99,7 @@ import { useAppSettings } from "./hooks/useAppSettings";
 import { useAppStartup } from "./hooks/useAppStartup";
 import { useAutoUpgradeSkills } from "./hooks/useAutoUpgradeSkills";
 import { useFutureAccount } from "./hooks/useFutureAccount";
+import { useFutureSubscription } from "./hooks/useFutureSubscription";
 import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
@@ -357,6 +358,11 @@ function ReadyAppShell({
   // Startup defaults must never briefly expose commercial entries before the
   // persisted community preference has arrived.
   const communityEdition = !appSettingsReady || appSettings.communityEdition;
+  // Whether the account holds a live token-plan subscription: `null` while it
+  // is unknown (signed out, community edition, platform unreachable), and
+  // unknown must not lock anything. The composer greys out catalogue models the
+  // platform reserves for subscribers (only `future-free` today).
+  const subscriptionActive = useFutureSubscription(futureSessionStatus === "authenticated" && !communityEdition);
   // Remote desktops (client role). Enabled for the whole session: the merged
   // conversation list is the chat section's own list, so a peer appearing must
   // update it without the user having visited the Remote Desktops screen first.
@@ -541,6 +547,19 @@ function ReadyAppShell({
     setSelectedModelId,
     refreshAgentModels,
   } = useAgentConnection(appSettings.hiddenModels);
+
+  // A draft pick the account cannot call — a subscription that lapsed since it
+  // was chosen — must not survive: the picker greys that row out, and starting
+  // a conversation on it would only fail at the platform. A per-thread choice is
+  // left alone; it is that conversation's own record, not a draft.
+  useEffect(() => {
+    const callable = callableModelOptions(visibleModelOptions, subscriptionActive);
+    if (callable.length === 0 || callable.length === visibleModelOptions.length)
+      return;
+    if (callable.some(model => modelKey(model) === selectedModelId))
+      return;
+    setSelectedModelId(resolveInitialModelId(callable));
+  }, [subscriptionActive, selectedModelId, visibleModelOptions, setSelectedModelId]);
 
   // When the onboarding gate finalizes a model choice it writes the pick to the
   // composer's last-used slot and emits `future-models-synced`. Apply that pick
@@ -2221,6 +2240,7 @@ function ReadyAppShell({
                               sessionMentions={sessionMentions}
                               futureSessionStatus={futureSessionStatus}
                               futureBalance={futureBalance}
+                              subscriptionActive={subscriptionActive}
                             />
                           )
                         : section === "skill"
@@ -2438,6 +2458,7 @@ function ReadyAppShell({
                                           : undefined}
                                         futureSessionStatus={futureSessionStatus}
                                         futureBalance={futureBalance}
+                                        subscriptionActive={subscriptionActive}
                                         headerAction={terminalHeaderAction}
                                         headerMachine={localMachineBadge}
                                         headerWorkspace={localWorkspaceBadge}

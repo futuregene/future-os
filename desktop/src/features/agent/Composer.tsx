@@ -143,6 +143,12 @@ interface ComposerProps {
   onThinkingLevelChange?: (thinkingLevel: string) => void;
   approvalTier?: ApprovalChipTier;
   futureSessionStatus?: string;
+  /**
+   * Whether the account holds a live token-plan subscription (`null` = unknown,
+   * nothing is locked). The model picker greys out catalogue entries the
+   * platform reserves for subscribers.
+   */
+  subscriptionActive?: boolean | null;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**
    * A reply is streaming. Submission (button + Enter) does not send while it
@@ -261,6 +267,7 @@ function ComposerImpl({
   onThinkingLevelChange,
   approvalTier,
   futureSessionStatus = "checking",
+  subscriptionActive,
   onChangeApprovalTier,
   sending,
   onAbort,
@@ -1091,6 +1098,7 @@ function ComposerImpl({
               onThinkingLevelChange={onThinkingLevelChange}
               approvalTier={approvalTier}
               futureSessionStatus={futureSessionStatus}
+              subscriptionActive={subscriptionActive}
               onChangeApprovalTier={onChangeApprovalTier}
               sending={sending}
               onAbort={onAbort}

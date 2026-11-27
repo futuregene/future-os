@@ -47,6 +47,10 @@ pub struct AgentModelOption {
     /// Future-platform recommendation flag (drives the onboarding model picker).
     #[serde(default)]
     recommended: bool,
+    /// Listed for everyone, callable only by token-plan subscribers. Only the
+    /// Future catalogue sets it; every other provider's models leave it false.
+    #[serde(default)]
+    requires_subscription: bool,
 }
 
 impl AgentModelOption {
@@ -264,6 +268,36 @@ mod tests {
             !mock.requests_of("list_models")[0].include_builtin_providers,
             "plain model list must not request the provider catalog"
         );
+    }
+
+    /// The subscriber-only flag survives the hop to the desktop, and an older
+    /// agent that does not send it reads as "not gated" — the direction that
+    /// keeps models callable rather than wrongly greying them.
+    #[tokio::test]
+    async fn list_agent_models_carries_the_subscriber_only_flag() {
+        let mock = mock_agent();
+        mock.push_data(
+            "list_models",
+            serde_json::json!({
+                "models": [
+                    {
+                        "id": "future-free",
+                        "label": "Free",
+                        "provider": "future",
+                        "requiresSubscription": true
+                    },
+                    { "id": "deepseek-flash", "label": "Flash", "provider": "future" }
+                ],
+                "defaultModel": "future/deepseek-flash"
+            }),
+        );
+        let models = list_agent_models().await.expect("models");
+        assert!(models[0].requires_subscription);
+        assert!(!models[1].requires_subscription);
+        // The webview reads camelCase — the field's name is the contract, not an
+        // implementation detail of this struct.
+        let wire = serde_json::to_value(&models[0]).expect("serializes");
+        assert_eq!(wire["requiresSubscription"], serde_json::json!(true));
     }
 
     #[tokio::test]

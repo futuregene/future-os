@@ -80,6 +80,11 @@ interface NewConversationProps {
   futureSessionStatus: string;
   /** Future balance in credits; recommendation requires a positive balance. */
   futureBalance: number | null;
+  /**
+   * Whether the account holds a live token-plan subscription (`null` = unknown).
+   * The composer greys out models the platform reserves for subscribers.
+   */
+  subscriptionActive?: boolean | null;
 }
 
 export function NewConversation({
@@ -105,6 +110,7 @@ export function NewConversation({
   sessionMentions,
   futureSessionStatus,
   futureBalance,
+  subscriptionActive,
 }: NewConversationProps) {
   const { t } = useTranslation("agent");
   const workspaceOptions = useMemo(
@@ -314,6 +320,7 @@ export function NewConversation({
               onThinkingLevelChange={onThinkingLevelChange}
               approvalTier={approvalTier}
               futureSessionStatus={futureSessionStatus}
+              subscriptionActive={subscriptionActive}
               onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
               preparing={catalogLoading}

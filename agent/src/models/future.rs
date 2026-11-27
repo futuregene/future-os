@@ -425,6 +425,10 @@ struct FutureModelEntry {
     description: Option<String>,
     description_en: Option<String>,
     recommended: Option<bool>,
+    /// Listed for everyone, callable only by token-plan subscribers. The server
+    /// omits the key for every other model, so absent means "not gated".
+    #[serde(default, alias = "requiresSubscription")]
+    requires_subscription: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -740,6 +744,7 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         description: entry.description,
         description_en: entry.description_en,
         recommended: entry.recommended.unwrap_or(false),
+        requires_subscription: entry.requires_subscription,
     };
     apply_disabled_effort_compat(&mut model);
     model
@@ -1316,6 +1321,7 @@ mod tests {
             description: None,
             description_en: None,
             recommended: None,
+            requires_subscription: false,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.reasoning);
@@ -1339,6 +1345,7 @@ mod tests {
             description: None,
             description_en: None,
             recommended: None,
+            requires_subscription: false,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(!model.reasoning);
@@ -1365,6 +1372,7 @@ mod tests {
             description: None,
             description_en: None,
             recommended: None,
+            requires_subscription: false,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert!(model.input.iter().any(|i| i == "image"));
@@ -1400,6 +1408,7 @@ mod tests {
             description: None,
             description_en: None,
             recommended: None,
+            requires_subscription: false,
         };
         let model = convert_future_model(entry, "https://api.example.com/v1");
         assert_eq!(model.cost.input, 1000.0); // 0.001 * 1M / 1
@@ -1625,6 +1634,22 @@ mod tests {
 
         // Connection refused → None (no server listening here).
         assert!(fetch_future_models("k", "http://127.0.0.1:1").is_none());
+    }
+
+    /// The catalogue marks a model every account can see but only subscribers
+    /// may call; the flag has to survive the conversion so a picker can grey the
+    /// row out instead of offering a request the API must refuse. Absent (the
+    /// normal case, and every non-Future provider) means callable by all.
+    #[test]
+    fn convert_future_model_carries_the_subscriber_only_flag() {
+        let gated: FutureModelEntry =
+            serde_json::from_str(r#"{"id":"future-free","requires_subscription":true}"#)
+                .expect("gated entry");
+        assert!(convert_future_model(gated, "https://example.invalid").requires_subscription);
+
+        let open: FutureModelEntry =
+            serde_json::from_str(r#"{"id":"deepseek-flash"}"#).expect("plain entry");
+        assert!(!convert_future_model(open, "https://example.invalid").requires_subscription);
     }
 
     #[test]

@@ -254,6 +254,95 @@ it("picks a model and a thinking level from their menus", async () => {
   expect(onThinkingLevelChange).toHaveBeenCalled();
 });
 
+describe("models the platform reserves for subscribers", () => {
+  // `future-free` is the only such model today: listed for everyone, callable
+  // only from a live plan. The row must stay visible and explain itself on
+  // hover rather than disappear or fail the send.
+  const GATED = [
+    ...MODELS,
+    {
+      id: "future-free",
+      label: "Future Free",
+      provider: "future",
+      thinkingLevels: ["default"],
+      defaultThinkingLevel: "default",
+      requiresSubscription: true,
+    },
+  ] as AgentModelOption[];
+
+  function freeRow() {
+    return menuItems().find(row => row.textContent?.includes("Future Free"))!;
+  }
+
+  it("greys it out without a plan, keeps it hoverable and refuses the pick", async () => {
+    const onModelChange = vi.fn();
+    render({ modelOptions: GATED, onModelChange, subscriptionActive: false });
+
+    await click(trigger("Model"));
+    const locked = freeRow();
+    // Not natively disabled: a disabled button swallows the tooltip, and the
+    // tooltip is the sentence that says why the row is unavailable.
+    expect(locked.disabled).toBe(false);
+    expect(locked.getAttribute("aria-disabled")).toBe("true");
+    expect(locked.className).toContain("opacity-50");
+    expect(locked.title).toBe("Requires a subscription plan");
+
+    await click(locked);
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it("offers it normally while the plan is live", async () => {
+    const onModelChange = vi.fn();
+    render({ modelOptions: GATED, onModelChange, subscriptionActive: true });
+
+    await click(trigger("Model"));
+    const row = freeRow();
+    expect(row.getAttribute("aria-disabled")).toBeNull();
+    expect(row.className).not.toContain("opacity-50");
+    await click(row);
+    expect(onModelChange).toHaveBeenCalledWith("future/future-free");
+  });
+
+  it("locks nothing while the plan could not be read", async () => {
+    // `null` is unknown — signed out, community edition, or a platform that did
+    // not answer. Greying on unknown would turn a transient failure into a
+    // catalogue the account cannot pick from.
+    const onModelChange = vi.fn();
+    render({ modelOptions: GATED, onModelChange, subscriptionActive: null });
+
+    await click(trigger("Model"));
+    expect(freeRow().getAttribute("aria-disabled")).toBeNull();
+    await click(freeRow());
+    expect(onModelChange).toHaveBeenCalledWith("future/future-free");
+  });
+
+  it("explains a locked model on the trigger when it is the active one", () => {
+    render({ modelOptions: GATED, modelId: "future/future-free", subscriptionActive: false });
+    expect(trigger("Requires a subscription plan").textContent).toContain("Future Free");
+  });
+
+  it("steps past it from the keyboard", async () => {
+    // Stepping is a blind walk through a ring the reader cannot see, so it must
+    // never land on a row the menu refuses to offer. From the last callable
+    // model the ring wraps to the first one, not to the locked `future-free`.
+    resetAllCommandBindings();
+    const uninstallShortcuts = installShortcuts();
+    const onModelChange = vi.fn();
+    try {
+      render({ modelOptions: GATED, modelId: "openai/m2", onModelChange, subscriptionActive: false });
+      await flush();
+      act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyO", ctrlKey: true, key: "o" }));
+      });
+      expect(onModelChange).toHaveBeenLastCalledWith("future/m1");
+    }
+    finally {
+      uninstallShortcuts();
+      resetAllCommandBindings();
+    }
+  });
+});
+
 it("labels the thinking control with the level in force", () => {
   render({ modelId: "m1", thinkingLevel: "high" });
   const thinking = byLabel("Thinking level")!;

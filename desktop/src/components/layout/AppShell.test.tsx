@@ -457,6 +457,12 @@ vi.mock("../../integrations/agent/agentClient", async (importOriginal) => {
 });
 vi.mock("../../integrations/agent/providers", () => ({
   getFutureEnvironment: async () => ({ platformUrl: "https://future.example" }),
+  // The shell reads the account's plan for the composer's model gate. This
+  // suite is about layout, and `null` (unknown) locks nothing, so the gate is
+  // inert here — the gate itself is covered by `useFutureSubscription.test.ts`
+  // and `Composer.panels.test.tsx`.
+  getFutureTokenPlan: async () => ({ active: false, grantedCredits: 0, usedCredits: 0, remainingCredits: 0, eligibleModels: [] }),
+  peekFutureTokenPlan: () => null,
 }));
 vi.mock("../../integrations/skills/skillsClient", () => ({
   refreshSkills: () => mocks.hooks.refreshSkills?.(),

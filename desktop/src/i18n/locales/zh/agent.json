@@ -187,6 +187,7 @@
     "attachCopiedFileLimit": "需复制的文件超过 {{max}}",
     "attachCopiedTotalLimit": "需复制的文件合计超过 {{max}}",
     "model": "模型",
+    "subscriptionRequired": "需订阅套餐后才能使用",
     "startAgentForModels": "请重新打开 FutureOS 以加载模型。",
     "allModelsDisabled": "已加载到模型，但已全部禁用。请在设置中启用。",
     "thinkingLevel": "思考强度",

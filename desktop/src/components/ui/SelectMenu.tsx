@@ -108,6 +108,13 @@ interface SelectMenuItemProps {
   children: ReactNode;
   className?: string;
   disabled?: boolean;
+  /**
+   * Drawn and announced as unavailable while staying hoverable, so its `title`
+   * can say why — a natively `disabled` button stops the browser from showing
+   * a tooltip, which is exactly the explanation a reserved-for-subscribers row
+   * needs. `onSelect` is never called.
+   */
+  unavailable?: boolean;
   /** Optional native tooltip shown on hover (e.g. a model's description). */
   title?: string;
   /**
@@ -122,19 +129,23 @@ interface SelectMenuItemProps {
 }
 
 /** A menu row with a trailing check mark when `selected`. */
-export function SelectMenuItem({ selected, onSelect, children, className, disabled = false, title, active = false, onHover }: SelectMenuItemProps) {
+export function SelectMenuItem({ selected, onSelect, children, className, disabled = false, unavailable = false, title, active = false, onHover }: SelectMenuItemProps) {
   return (
     <button
       aria-current={active ? "true" : undefined}
+      aria-disabled={unavailable || undefined}
       className={cn(
         "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-subtle",
         active && "bg-surface-subtle",
-        disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
+        (disabled || unavailable) && "cursor-not-allowed opacity-50 hover:bg-transparent",
         className,
       )}
       disabled={disabled}
       onMouseEnter={onHover}
-      onClick={onSelect}
+      onClick={() => {
+        if (!disabled && !unavailable)
+          onSelect();
+      }}
       title={title}
       type="button"
     >

@@ -80,6 +80,12 @@ pub struct Model {
     /// `false` for built-in / user models and for catalog entries that omit it.
     #[serde(default)]
     pub recommended: bool,
+    /// The Future platform lists this model for everyone but only accounts with
+    /// a live token-plan subscription may call it. Clients use the flag to grey
+    /// the row out with a reason instead of offering a request that must fail;
+    /// the agent itself still sends the call (the API is the authority).
+    #[serde(default)]
+    pub requires_subscription: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -385,6 +391,7 @@ fn model_from_builtin(m: builtin::Model) -> Model {
         description: None,
         description_en: None,
         recommended: false,
+        requires_subscription: false,
     }
 }
 

@@ -234,6 +234,7 @@ pub(crate) fn list_models_response(
                 "description": model.description,
                 "descriptionEn": model.description_en,
                 "recommended": model.recommended,
+                "requiresSubscription": model.requires_subscription,
             })
         })
         .collect();

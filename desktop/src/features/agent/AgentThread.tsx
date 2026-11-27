@@ -126,6 +126,11 @@ export interface AgentThreadProps {
   /** Future balance in credits; recommendation requires a positive balance. */
   futureBalance: number | null;
   /**
+   * Whether the account holds a live token-plan subscription (`null` = unknown).
+   * The composer greys out models the platform reserves for subscribers.
+   */
+  subscriptionActive?: boolean | null;
+  /**
    * Optional header affordance supplied by the shell (e.g. the terminal
    * toggle). Kept as a node so this feature does not depend on the terminal.
    */
@@ -225,6 +230,7 @@ export function AgentThread({
   skillRecommend,
   futureSessionStatus,
   futureBalance,
+  subscriptionActive,
   headerAction,
   headerMachine,
   headerWorkspace,
@@ -879,6 +885,7 @@ export function AgentThread({
           onThinkingLevelChange={onThinkingLevelChange}
           approvalTier={approvalTier}
           futureSessionStatus={futureSessionStatus}
+          subscriptionActive={subscriptionActive}
           onChangeApprovalTier={onChangeApprovalTier}
           sending={isReplyStreaming}
           onAbort={handleComposerAbort}

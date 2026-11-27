@@ -74,6 +74,12 @@ export interface AgentModelOption {
   descriptionEn?: string | null;
   /** Future-platform recommendation flag (drives the onboarding model picker). */
   recommended?: boolean;
+  /**
+   * The Future platform lists this model for everyone but only token-plan
+   * subscribers may call it. Absent means "not gated" — every provider other
+   * than Future leaves it unset.
+   */
+  requiresSubscription?: boolean;
 }
 
 /** Attachment wire shape accepted by the agent_prompt Tauri command. */
@@ -385,6 +391,40 @@ export function resolveInitialThinkingLevel(modelId: string, models: AgentModelO
  */
 export function modelLabel(modelId: string, models: AgentModelOption[]): string | undefined {
   return modelOption(modelId, models)?.label ?? (modelId || undefined);
+}
+
+/**
+ * Whether the platform reserves this model for token-plan subscribers: it stays
+ * in the catalogue (so a picker can explain it) while a non-subscriber's call
+ * is refused. Only the Future catalogue sets the flag; every other provider's
+ * models are callable on their own key, so none of them is gated.
+ */
+export function modelRequiresSubscription(model: AgentModelOption): boolean {
+  return model.requiresSubscription === true;
+}
+
+/**
+ * Whether the account cannot use this model right now: the platform reserves it
+ * and the account is known to have no live subscription.
+ *
+ * `subscriptionActive` is `null` when the plan could not be read (signed out,
+ * community edition, platform unreachable). Unknown locks nothing — a transient
+ * read failure must not turn the catalogue into something the user cannot pick
+ * from.
+ */
+export function isModelLockedBySubscription(model: AgentModelOption, subscriptionActive: boolean | null): boolean {
+  return subscriptionActive === false && modelRequiresSubscription(model);
+}
+
+/**
+ * The models the account can call right now, in catalogue order.
+ *
+ * Same list while the plan is live or unknown — this narrows only when the
+ * platform says the account has no subscription, so a picker can step through
+ * what it may actually use without re-deriving the rule.
+ */
+export function callableModelOptions(models: AgentModelOption[], subscriptionActive: boolean | null): AgentModelOption[] {
+  return models.filter(model => !isModelLockedBySubscription(model, subscriptionActive));
 }
 
 /**

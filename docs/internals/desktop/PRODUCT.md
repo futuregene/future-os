@@ -1104,6 +1104,16 @@ models still follow catalog capabilities.
 
 The dialog's model picker shares a source with the models page: both mark which
 provider a model comes from. Provider keys belong to app / model settings.
+
+The composer's model picker greys out a catalogue model the platform reserves
+for token-plan subscribers (`future-free`; `deepseek-flash` is inside the plans'
+whitelist but still callable from the balance, so it is not gated) while the
+account has no live subscription. The row stays listed instead of disappearing,
+says why on hover, and refuses the pick; keyboard stepping skips it, and a draft
+pick that a lapsed subscription locked moves to the default. Unknown — signed
+out, community edition, or a failed read — locks nothing, and a per-thread model
+is left alone because it is that conversation's own record. The plan comes from
+the same platform snapshot the account page shows.
 Configuration storage and the login implementation are in ER.md §6.9.
 
 #### New-user onboarding gate (OnboardingGate)

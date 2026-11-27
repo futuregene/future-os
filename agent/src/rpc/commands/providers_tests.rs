@@ -508,6 +508,42 @@ fn list_models_uses_id_label_for_unnamed_model() {
 /// conversation starts at on it — resolved here, so no client re-derives either
 /// rule and none can disagree with the clamp.
 #[test]
+fn list_models_sends_the_subscriber_only_flag() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    let model = |id: &str, requires_subscription: bool| crate::models::Model {
+        id: id.to_string(),
+        name: id.to_string(),
+        provider: "future".to_string(),
+        api_key: "k".to_string(),
+        output: vec!["text".to_string()],
+        requires_subscription,
+        ..Default::default()
+    };
+    state
+        .model_registry
+        .write()
+        .test_insert(model("future-free", true));
+    state
+        .model_registry
+        .write()
+        .test_insert(model("deepseek-flash", false));
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    let models = resp["data"]["models"].as_array().unwrap();
+    let flag = |id: &str| {
+        models
+            .iter()
+            .find(|m| m["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed"))["requiresSubscription"]
+            .as_bool()
+    };
+    assert_eq!(flag("future-free"), Some(true));
+    // In the plan's whitelist is not the same as reserved for it: the balance
+    // pays for `deepseek-flash` too, so it must stay offered to everyone.
+    assert_eq!(flag("deepseek-flash"), Some(false));
+}
+
+#[test]
 fn list_models_sends_each_models_thinking_levels_and_starting_level() {
     let home = TestHome::new();
     let path = home.models_path();

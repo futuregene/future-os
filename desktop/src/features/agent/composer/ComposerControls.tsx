@@ -4,7 +4,7 @@ import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldKeyhole, S
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../../components/ui/SelectMenu";
-import { localizedModelDescription, modelKey, modelLabel, modelOption, modelThinkingLevels, resolveThinkingLevel, thinkingLevelName } from "../../../integrations/agent/agentClient";
+import { callableModelOptions, isModelLockedBySubscription, localizedModelDescription, modelKey, modelLabel, modelOption, modelThinkingLevels, resolveThinkingLevel, thinkingLevelName } from "../../../integrations/agent/agentClient";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../integrations/agent/automaticApproval";
 import { requestModelCatalogRefresh } from "../../../integrations/agent/modelCatalogRefresh";
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
@@ -76,6 +76,12 @@ interface Props {
   onThinkingLevelChange?: (level: string) => void;
   approvalTier?: ApprovalChipTier;
   futureSessionStatus: string;
+  /**
+   * Whether the account holds a live token-plan subscription (`null` = unknown,
+   * nothing is locked). A catalogue model the platform reserves for subscribers
+   * is greyed out, with the reason on hover, instead of being offered.
+   */
+  subscriptionActive?: boolean | null;
   onChangeApprovalTier?: (tier: ApprovalTier) => void;
   sending?: boolean;
   onAbort?: () => void;
@@ -110,7 +116,7 @@ interface Props {
   };
 }
 
-export function ComposerControls({ disabled, preparing, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, sendHolding = false, queue }: Props) {
+export function ComposerControls({ disabled, preparing, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, subscriptionActive = null, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending, sendHolding = false, queue }: Props) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
   const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
@@ -149,14 +155,18 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
   // opening one would only get a reader to a pointer target; stepping the value
   // is what hands on the keys are asking for. One pair each, because holders of
   // `⇧` walk back instead of going the long way round.
-  const canStepModel = !disabled && modelOptions.length > 1 && Boolean(onModelChange);
+  //
+  // Models the account cannot call are dropped from the ring: stepping is a
+  // blind walk, so it must never land on a row the menu refuses to offer.
+  const callableModels = callableModelOptions(modelOptions, subscriptionActive);
+  const canStepModel = !disabled && callableModels.length > 1 && Boolean(onModelChange);
   useCommand("composer.model.previous", () => {
-    const next = stepRing(modelOptions, activeModel, -1);
+    const next = stepRing(callableModels, activeModel, -1);
     if (next)
       onModelChange?.(modelKey(next));
   }, canStepModel);
   useCommand("composer.model.next", () => {
-    const next = stepRing(modelOptions, activeModel, 1);
+    const next = stepRing(callableModels, activeModel, 1);
     if (next)
       onModelChange?.(modelKey(next));
   }, canStepModel);
@@ -287,7 +297,9 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                   setModelMenuOpen(open => !open);
                 }}
                 type="button"
-                title={t("composer.model")}
+                title={activeModel && isModelLockedBySubscription(activeModel, subscriptionActive)
+                  ? t("composer.subscriptionRequired")
+                  : t("composer.model")}
               >
                 <span className="truncate">{modelLabel(activeModelId, modelOptions) ?? t("common:modelFallback")}</span>
                 <ChevronDown className="size-3 shrink-0" />
@@ -303,25 +315,35 @@ export function ComposerControls({ disabled, preparing, modelId, modelOptions, m
                   </div>
                 )
               : null}
-            {modelOptions.map(model => (
-              <SelectMenuItem
-                className="py-1"
-                key={`${model.provider}/${model.id}`}
-                selected={model === activeModel}
-                onSelect={() => {
-                  onModelChange?.(modelKey(model));
-                  setModelMenuOpen(false);
-                }}
-                title={localizedModelDescription(model, i18n.language) ?? undefined}
-              >
-                <span className="min-w-0 flex-1 space-y-0.5">
-                  <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
-                  <span className="block truncate text-xs leading-tight text-ink-muted">
-                    {providerNames[model.provider] ?? model.provider}
+            {modelOptions.map((model) => {
+              // A model the platform reserves for subscribers stays in the list
+              // — hiding it would just leave the reader wondering where it went
+              // — but cannot be picked while the account has no plan. `null`
+              // (unknown) locks nothing.
+              const locked = isModelLockedBySubscription(model, subscriptionActive);
+              return (
+                <SelectMenuItem
+                  className="py-1"
+                  key={`${model.provider}/${model.id}`}
+                  selected={model === activeModel}
+                  unavailable={locked}
+                  onSelect={() => {
+                    onModelChange?.(modelKey(model));
+                    setModelMenuOpen(false);
+                  }}
+                  title={locked
+                    ? t("composer.subscriptionRequired")
+                    : localizedModelDescription(model, i18n.language) ?? undefined}
+                >
+                  <span className="min-w-0 flex-1 space-y-0.5">
+                    <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
+                    <span className="block truncate text-xs leading-tight text-ink-muted">
+                      {providerNames[model.provider] ?? model.provider}
+                    </span>
                   </span>
-                </span>
-              </SelectMenuItem>
-            ))}
+                </SelectMenuItem>
+              );
+            })}
           </SelectMenu>
           <SelectMenu
             className="hidden md:block"
