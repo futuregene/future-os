@@ -4,8 +4,32 @@ import { useCommittedRef } from "../../lib/useCommittedRef";
 
 /** Within this many px of the bottom, auto-follow streaming output. */
 const STICK_THRESHOLD_PX = 48;
-/** Past this distance from the bottom, reveal the "jump to latest" button. */
+/** Past this distance below the viewport for the newest message, reveal "jump to latest". */
 const JUMP_BUTTON_THRESHOLD_PX = 240;
+
+/**
+ * How far the newest message's end sits below the viewport — the distance that
+ * decides the "jump to latest" button.
+ *
+ * Not `scrollHeight - clientHeight - scrollTop`. The transcript ends in a spacer
+ * as tall as the composer, so the last line clears the input box, and the pane
+ * keeps bottom padding of its own; no scroll closes that tail. Measuring to the
+ * content's end therefore reports a distance a reader parked on the newest
+ * message cannot reduce, and the button offers a jump to a message already on
+ * screen. Measured to the message instead — the same way stickiness is decided,
+ * from the caret rather than the document — it reads 0 once that message is in
+ * view. Rows are `[data-message-id]`, which both transcripts mark.
+ */
+function newestMessageBelow(container: HTMLElement): number {
+  const rows = container.querySelectorAll<HTMLElement>("[data-message-id]");
+  const newest = rows[rows.length - 1];
+  if (!newest)
+    return 0;
+  const overshoot
+    = newest.getBoundingClientRect().bottom
+      - container.getBoundingClientRect().bottom;
+  return Math.max(0, overshoot);
+}
 
 interface UseStickyAutoScrollInput {
   scrollRef: RefObject<HTMLElement | null>;
@@ -131,10 +155,9 @@ export function useStickyAutoScroll({
     }
     if (container.scrollTop !== before)
       writtenTopRef.current = container.scrollTop;
-    const distance
-      = container.scrollHeight - container.clientHeight - container.scrollTop;
     setShowJumpToLatest(
-      !stickToBottomRef.current && distance > JUMP_BUTTON_THRESHOLD_PX,
+      !stickToBottomRef.current
+      && newestMessageBelow(container) > JUMP_BUTTON_THRESHOLD_PX,
     );
     onContentSettledRef.current?.();
   }, [followEnabled, onContentSettledRef, scrollRef]);
@@ -171,7 +194,9 @@ export function useStickyAutoScroll({
           : captureAnchor(scrollContainer);
       }
       writtenTopRef.current = null;
-      setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
+      setShowJumpToLatest(
+        newestMessageBelow(scrollContainer) > JUMP_BUTTON_THRESHOLD_PX,
+      );
     }
   }, [onScrollRef, scrollRef, settleViewport, shouldRestoreAnchorRef]);
 
